@@ -155,55 +155,65 @@ async function reverseGeocode(lat, lng) {
   return { code, name, detail: j.results.lv01Nm || "" };
 }
 
-async function overpass(query) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 時間をかけてでも取る:取得先を順番に試し、全部だめなら間隔をあけて繰り返す(1問い合わせあたり最大約2分)
+async function overpass(query, onWait) {
   const body = "data=" + encodeURIComponent(query);
-  const one = async (url) => {
-    try {
-      const r = await withTimeout(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }, 15000);
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const j = await r.json();
-      if (j.remark && /error|timed out/i.test(j.remark) && !(j.elements || []).length) throw new Error("サーバー混雑");
-      return j.elements || [];
-    } catch (e) {
-      throw new Error(new URL(url).hostname + ": " + (e.name === "AbortError" ? "15秒でタイムアウト" : e.message));
+  const deadline = Date.now() + 120000;
+  const waits = [3000, 8000, 15000, 25000];
+  let last = "";
+  for (let round = 0; round <= waits.length; round++) {
+    for (const url of CONFIG.OVERPASS) {
+      if (Date.now() > deadline) throw new Error(last || "時間切れ");
+      try {
+        const r = await withTimeout(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }, 40000);
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const j = await r.json();
+        if (j.remark && /error|timed out/i.test(j.remark) && !(j.elements || []).length) throw new Error("サーバー混雑");
+        return j.elements || [];
+      } catch (e) {
+        last = new URL(url).hostname + ": " + (e.name === "AbortError" ? "タイムアウト" : e.message);
+      }
     }
-  };
-  // 全ての取得先に同時に問い合わせ、最初に成功した結果を使う(最悪でも約15秒)
-  try { return await Promise.any(CONFIG.OVERPASS.map(one)); }
-  catch (agg) { throw new Error((agg.errors || []).map((e) => e.message).slice(0, 2).join(" / ") || "取得先に接続できません"); }
+    if (round < waits.length) { if (onWait) onWait(round + 1); await sleep(waits[round]); }
+  }
+  throw new Error(last || "取得先に接続できません");
 }
 
-/** OpenStreetMap(Overpass):周辺の建物・道路・消防署。3つを別々に取り、取れたものだけ使う。 */
-async function fetchNearby(lat, lng) {
-  const out = { buildings: null, roads: null, fire: null, errors: {} };
+const cache = new Map();
+
+/**
+ * OpenStreetMap(Overpass):建物・道路・消防署・農地の手がかりを、1項目ずつ順番に取る。
+ * 1項目取れるたびに onUpdate(out) を呼ぶので、画面に少しずつ表示できる。
+ */
+async function fetchNearby(lat, lng, onUpdate) {
+  const key = lat.toFixed(4) + "," + lng.toFixed(4);
+  if (cache.has(key)) { const c = cache.get(key); onUpdate && onUpdate(c); return c; }
+  const out = { buildings: null, roads: null, fire: null, landuse: null, errors: {}, pending: { buildings: true, roads: true, fire: true, landuse: true } };
   const pt = (e) => e.center || (e.lat != null ? { lat: e.lat, lon: e.lon } : null);
-  const jobs = [];
-  jobs.push((async () => { try {
-    const els = await overpass(`[out:json][timeout:30];way["building"](around:600,${lat},${lng});out center tags 400;`);
-    out.buildings = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
-      return { lat: c.lat, lng: c.lon, d: hav(lat, lng, c.lat, c.lon), type: t.building || "yes", res: CONFIG.RESIDENTIAL.includes(t.building) }; })
-      .filter(Boolean).sort((a, b) => a.d - b.d);
-  } catch (e) { out.errors.buildings = e.message; } })());
-  jobs.push((async () => { try {
-    const els = await overpass(`[out:json][timeout:30];way["highway"](around:60,${lat},${lng});out center tags 60;`);
-    out.roads = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
-      return { cls: t.highway, name: t.name || "", width: t.width || "", d: hav(lat, lng, c.lat, c.lon) }; })
-      .filter(Boolean).sort((a, b) => a.d - b.d);
-  } catch (e) { out.errors.roads = e.message; } })());
-  jobs.push((async () => { try {
-    const els = await overpass(`[out:json][timeout:30];nwr["amenity"="fire_station"](around:10000,${lat},${lng});out center tags 20;`);
-    out.fire = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
-      return { lat: c.lat, lng: c.lon, d: hav(lat, lng, c.lat, c.lon), name: t.name || "" }; })
-      .filter(Boolean).sort((a, b) => a.d - b.d);
-  } catch (e) { out.errors.fire = e.message; } })());
-  await Promise.all(jobs);
+  const tick = () => onUpdate && onUpdate(out);
+  const job = async (k, q, map) => {
+    try {
+      const els = await overpass(q);
+      out[k] = map(els);
+    } catch (e) { out.errors[k] = e.message; }
+    out.pending[k] = false; tick();
+  };
+  const withD = (e) => { const c = pt(e); if (!c) return null; return { c, t: e.tags || {}, d: hav(lat, lng, c.lat, c.lon) }; };
+  await job("buildings", `[out:json][timeout:30];way["building"](around:600,${lat},${lng});out center tags 500;`,
+    (els) => els.map(withD).filter(Boolean).map(({ c, t, d }) => ({ lat: c.lat, lng: c.lon, d, type: t.building || "yes", res: CONFIG.RESIDENTIAL.includes(t.building) })).sort((a, b) => a.d - b.d));
+  await sleep(1500);
+  await job("roads", `[out:json][timeout:30];way["highway"](around:60,${lat},${lng});out center tags 40;`,
+    (els) => els.map(withD).filter(Boolean).map(({ t, d }) => ({ cls: t.highway, name: t.name || "", width: t.width || "", d })).sort((a, b) => a.d - b.d));
+  await sleep(1500);
+  await job("fire", `[out:json][timeout:30];nwr["amenity"="fire_station"](around:10000,${lat},${lng});out center tags 10;`,
+    (els) => els.map(withD).filter(Boolean).map(({ c, t, d }) => ({ lat: c.lat, lng: c.lon, d, name: t.name || "" })).sort((a, b) => a.d - b.d));
+  await sleep(1500);
+  await job("landuse", `[out:json][timeout:30];way["landuse"~"^(farmland|farm|orchard|vineyard|meadow|greenhouse_horticulture|plant_nursery)$"](around:15,${lat},${lng});out tags 10;`,
+    (els) => els.map((e) => (e.tags && e.tags.landuse) || "").filter(Boolean));
+  if (!Object.keys(out.errors).length) cache.set(key, out);
   return out;
-}
-
-/** OpenStreetMap(Overpass):点を含む土地利用(農地かどうかの手がかり)。 */
-async function fetchLanduse(lat, lng) {
-  const els = await overpass(`[out:json][timeout:25];is_in(${lat},${lng})->.a;area.a["landuse"];out tags;`);
-  return els.map((e) => (e.tags && e.tags.landuse) || "").filter(Boolean);
 }
 
 /**
@@ -251,6 +261,8 @@ function mlitRow(label, st, build) {
 function evaluate(ctx) {
   const { muni, nearby, landuse, mlit, rules } = ctx;
   const rule = muni ? findRule(rules, muni.code) : null;
+  const pend = (k) => nearby.pending && nearby.pending[k];
+  const why = (k) => nearby.errors[k] || nearby.errors.all || "原因不明";
   const sections = [];
 
   // ---------- 1. 土地の規制 ----------
@@ -269,7 +281,7 @@ function evaluate(ctx) {
 
   const farm = landuse ? landuse.filter((x) => CONFIG.FARMLAND.includes(x)) : null;
   let farmText = "農地転用の要否は、登記・現況・農業委員会の判断で決まります。";
-  if (farm === null) farmText = "未確認:土地利用の取得に失敗しました(" + (ctx.landuseErr || "原因不明") + ")。" + farmText;
+  if (farm === null) farmText = (pend("landuse") ? "取得中…" : "未確認:土地利用の取得に失敗しました(" + why("landuse") + ")。") + farmText;
   else if (farm.length) farmText = "農地の可能性あり(地図上の土地利用: " + [...new Set(farm)].join("、") + ")。" + farmText;
   else farmText = "地図上では農地の記載なし(未登録の場合あり)。" + farmText;
   if (isUrban) farmText += " 市街化区域のため、農地であれば転用は届出で足りる可能性(農業委員会に要確認)。";
@@ -288,7 +300,7 @@ function evaluate(ctx) {
   // ---------- 2. 周辺住宅との距離と市の基準 ----------
   const dist = [];
   if (!nearby.buildings) {
-    dist.push({ label: "最寄りの住宅系建物", text: "未確認:周辺建物の取得に失敗しました(" + (nearby.errors.buildings || nearby.errors.all || "原因不明") + ")", status: "todo", source: OSM, hint: "時間をおいて同じ地点をもう一度押す。または現地・航空写真で確認" });
+    dist.push({ label: "最寄りの住宅系建物", text: pend("buildings") ? "取得中…" : "未確認:周辺建物の取得に失敗しました(" + why("buildings") + ")", status: "todo", source: OSM, hint: "時間をおいて同じ地点をもう一度押す。または現地・航空写真で確認" });
   } else {
     const res = nearby.buildings.filter((b) => b.res);
     const any = nearby.buildings;
@@ -334,7 +346,7 @@ function evaluate(ctx) {
 
   // ---------- 4. 注意点 ----------
   const care = [];
-  const fail = (k) => "未確認:取得に失敗しました(" + (nearby.errors[k] || nearby.errors.all || "原因不明") + ")";
+  const fail = (k) => pend(k) ? "取得中…" : "未確認:取得に失敗しました(" + why(k) + ")";
   if (nearby.buildings) {
     const n300 = nearby.buildings.filter((b) => b.res && b.d <= 300).length;
     care.push({ label: "住民", text: "300m以内の住宅系建物 約" + n300 + "棟。説明会・周知の要否と範囲は市の基準と事業者判断(上の基準を確認)", status: "todo", source: OSM, hint: "棟数は概算。住民への説明そのものは事業者が行います" });
@@ -400,7 +412,7 @@ async function run(lat, lng, fly, z) {
   const my = ++seq;
   marker.setLatLng([lat, lng]).addTo(map);
   if (fly) map.setView([lat, lng], z || 15);
-  $("result").innerHTML = '<p class="hint">取得中…(最大でも約20秒で終わります)</p>';
+  $("result").innerHTML = '<p class="hint">取得中…(混んでいるときは数分かかります。取れた項目から順に表示します)</p>';
 
   const settle = async (p) => { try { return { v: await p }; } catch (e) { return { e: e.message || String(e) }; } };
   const mlitState = async (layerName) => {
@@ -411,15 +423,19 @@ async function run(lat, lng, fly, z) {
   // Overpass への同時アクセスを避けるため、OSM系は順番に取得。国の API・住所は並行。
   const geoP = settle(reverseGeocode(lat, lng));
   const kP = mlitState("XKT001"), zP = mlitState("XKT002");
-  const [nb, lu] = await Promise.all([settle(fetchNearby(lat, lng)), settle(fetchLanduse(lat, lng))]);
   const [geo, kubun, zoning] = await Promise.all([geoP, kP, zP]);
-  if (my !== seq) return; // 後から押された操作を優先
-
+  if (my !== seq) return;
   const muni = geo.v || null;
-  const nearby = nb.v || { buildings: null, roads: null, fire: null, errors: { all: nb.e } };
-  const res = evaluate({ muni, nearby, landuse: lu.v || null, landuseErr: lu.e, mlit: { kubun, zoning }, rules });
-  draw(lat, lng, nearby, res.radius);
-  render(muni, geo.e, res);
+  const show = (nearby) => {
+    if (my !== seq) return;
+    const res = evaluate({ muni, nearby, landuse: nearby.landuse, mlit: { kubun, zoning }, rules });
+    draw(lat, lng, nearby, res.radius);
+    render(muni, geo.e, res);
+  };
+  const empty = { buildings: null, roads: null, fire: null, landuse: null, errors: {}, pending: { buildings: true, roads: true, fire: true, landuse: true } };
+  show(empty);
+  try { await fetchNearby(lat, lng, show); }
+  catch (e) { show({ ...empty, pending: {}, errors: { all: e.message } }); }
 }
 
 function draw(lat, lng, nearby, radius) {
