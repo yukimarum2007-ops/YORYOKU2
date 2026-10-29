@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>立地評価 一次スクリーニング</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--bg:#f6f5f1;--card:#fff;--ink:#1f2937;--mute:#6b7280;--line:#e5e7eb;--ok:#166534;--okbg:#dcfce7;--todo:#92400e;--todobg:#fef3c7;--warn:#991b1b;--warnbg:#fee2e2;--link:#1d4ed8}
+@media (prefers-color-scheme:dark){:root{--bg:#111827;--card:#1f2937;--ink:#f3f4f6;--mute:#9ca3af;--line:#374151;--ok:#86efac;--okbg:#14532d;--todo:#fcd34d;--todobg:#451a03;--warn:#fca5a5;--warnbg:#450a0a;--link:#93c5fd}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 system-ui,"Hiragino Sans","Noto Sans JP",sans-serif}
+header{padding:16px 16px 4px}
+header h1{margin:0 0 4px;font-size:20px}
+header p{margin:0;color:var(--mute);font-size:13px}
+main{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px;padding:12px 16px 24px}
+@media (max-width:860px){main{grid-template-columns:1fr}}
+#map{height:560px;border:1px solid var(--line);border-radius:8px}
+@media (max-width:860px){#map{height:360px}}
+.presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.presets button{border:1px solid var(--line);background:var(--card);color:var(--ink);padding:6px 12px;border-radius:999px;cursor:pointer;font:inherit}
+.presets button:hover{border-color:var(--link)}
+.attr{font-size:11px;color:var(--mute);margin:6px 0 0}
+#panel{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;min-width:0}
+#result h2{margin:0 0 6px;font-size:18px}
+#result h2 small{display:block;font-size:12px;font-weight:400;color:var(--mute)}
+#result h3{margin:18px 0 6px;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:4px}
+.counts{margin:6px 0}
+.chip{display:inline-block;margin-right:6px;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.chip.ok,.badge.ok{background:var(--okbg);color:var(--ok)}
+.chip.todo,.badge.todo{background:var(--todobg);color:var(--todo)}
+.chip.warn,.badge.warn{background:var(--warnbg);color:var(--warn)}
+.row{padding:8px 0;border-bottom:1px dashed var(--line)}
+.lab{font-weight:600;font-size:13px}
+.badge{display:inline-block;margin-right:8px;padding:1px 8px;border-radius:4px;font-size:11px;font-weight:700}
+.txt{margin:2px 0 2px}
+.src{font-size:12px;color:var(--mute);overflow-wrap:anywhere}
+.src a{color:var(--link)}
+.src .h{color:var(--mute)}
+.nosrc{color:var(--todo)}
+.hint,.note{color:var(--mute);font-size:13px}
+.note{background:var(--todobg);color:var(--todo);padding:8px 10px;border-radius:6px}
+.foot{margin-top:16px;font-size:12px;color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+  <h1>立地評価 一次スクリーニング</h1>
+  <p>地図で地点を選ぶと、土地の規制・周辺住宅との距離・市の基準・注意点を1ページにまとめます。各項目に「確認済み/未確認」と出典を付けます。</p>
+</header>
+<main>
+  <div class="mapcol">
+    <div id="presets" class="presets"></div>
+    <div id="map"></div>
+    <p class="attr">地図: 国土地理院 / 建物・道路・消防署: © OpenStreetMap contributors / 都市計画: 国土交通省 不動産情報ライブラリ</p>
+  </div>
+  <aside id="panel">
+    <p id="proxyNote" class="note" hidden>用途地域・区域区分は、国のAPI用の中継サーバーが未設定のため「未確認」と表示されます(README参照)。</p>
+    <div id="result"></div>
+  </aside>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://maps.gsi.go.jp/js/muni.js"></script>
+<script type="module">
+// 設定ファイル。
+// PROXY_URL: 国土交通省「不動産情報ライブラリ」のAPIを中継するサーバー(worker/reinfolib-proxy.js)のURL。
+//   空のままでも動きますが、用途地域・区域区分は「未確認」と表示されます。
+//   例: "https://site-screening-proxy.<あなたのアカウント>.workers.dev"
+//   動作確認用に、URLの末尾に ?proxy=https://... を付けて上書きすることもできます。
+const params = new URLSearchParams(location.search);
+
+const CONFIG = {
+  PROXY_URL: params.get("proxy") || "",
+  OVERPASS: [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+  ],
+  // 地図に描く参考の円(m)。市のルールに距離の基準があれば、その値に置き換わる
+  REF_RADIUS_M: 300,
+  // 住宅系として数える OpenStreetMap の building タグ
+  RESIDENTIAL: ["house", "residential", "detached", "semidetached_house", "terrace", "apartments", "dormitory", "bungalow"],
+  // 農地として数える OpenStreetMap の landuse タグ
+  FARMLAND: ["farmland", "farm", "orchard", "vineyard", "meadow", "greenhouse_horticulture", "plant_nursery", "paddy"]
+};
+
+// 地理計算の小さな道具。外部ライブラリなし。
+
+/** 2点間の距離(m)。 */
+function hav(lat1, lng1, lat2, lng2) {
+  const R = 6371000, t = Math.PI / 180;
+  const dLat = (lat2 - lat1) * t, dLng = (lng2 - lng1) * t;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * t) * Math.cos(lat2 * t) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+/** 緯度経度 → XYZタイル座標(国土地理院・OSMと同じ方式)。 */
+function lngLatToTile(lng, lat, z) {
+  const n = 2 ** z;
+  const x = Math.floor(((lng + 180) / 360) * n);
+  const rad = (lat * Math.PI) / 180;
+  const y = Math.floor(((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * n);
+  return { x, y, z };
+}
+
+function inRing(lng, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if ((yi > lat) !== (yj > lat) && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function inPolygon(lng, lat, rings) {
+  if (!rings.length || !inRing(lng, lat, rings[0])) return false;
+  for (let k = 1; k < rings.length; k++) if (inRing(lng, lat, rings[k])) return false; // 穴
+  return true;
+}
+
+/** GeoJSON の Feature(Polygon / MultiPolygon)が、点を含むか。 */
+function featureContains(feature, lng, lat) {
+  const g = feature && feature.geometry;
+  if (!g) return false;
+  if (g.type === "Polygon") return inPolygon(lng, lat, g.coordinates);
+  if (g.type === "MultiPolygon") return g.coordinates.some((p) => inPolygon(lng, lat, p));
+  return false;
+}
+
+const round5 = (m) => Math.round(m / 5) * 5;
+
+// データの取得。ここだけがネットワークに触れる。
+// どの取得も失敗しうるので、呼び出し側(app.js)が失敗を「未確認」として扱う。
+
+
+function withTimeout(url, opts = {}, ms = 15000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
+/** 国土地理院 逆ジオコーダ:点 → 市区町村コード。名前は muni.js(index.html で読み込み)から引く。 */
+async function reverseGeocode(lat, lng) {
+  const r = await withTimeout(`https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${lat}&lon=${lng}`, {}, 10000);
+  if (!r.ok) throw new Error("gsi " + r.status);
+  const j = await r.json();
+  const code = j && j.results && String(j.results.muniCd || "");
+  if (!code) return null;
+  let name = null;
+  try {
+    const rec = window.MUNI_ARRAY && window.MUNI_ARRAY[code];
+    if (rec) { const p = String(rec).split(","); name = (p[1] || "") + (p[3] || ""); }
+  } catch (e) { /* 名前なし */ }
+  return { code, name, detail: j.results.lv01Nm || "" };
+}
+
+async function overpass(query) {
+  const body = "data=" + encodeURIComponent(query);
+  let lastErr;
+  for (const url of CONFIG.OVERPASS) {
+    try {
+      const r = await withTimeout(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }, 25000);
+      if (!r.ok) throw new Error("overpass " + r.status);
+      return (await r.json()).elements || [];
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+/** OpenStreetMap(Overpass):周辺の建物・道路・消防署。 */
+async function fetchNearby(lat, lng) {
+  const q = `[out:json][timeout:25];
+(way["building"](around:800,${lat},${lng}););out center tags 500;
+(way["highway"](around:60,${lat},${lng}););out center tags 60;
+(nwr["amenity"="fire_station"](around:10000,${lat},${lng}););out center tags 20;`;
+  const els = await overpass(q);
+  const buildings = [], roads = [], fire = [];
+  for (const e of els) {
+    const t = e.tags || {};
+    const c = e.center || (e.lat != null ? { lat: e.lat, lon: e.lon } : null);
+    if (!c) continue;
+    const d = hav(lat, lng, c.lat, c.lon);
+    if (t.building) buildings.push({ lat: c.lat, lng: c.lon, d, type: t.building, res: CONFIG.RESIDENTIAL.includes(t.building) });
+    else if (t.highway) roads.push({ cls: t.highway, name: t.name || "", width: t.width || "", d });
+    else if (t.amenity === "fire_station") fire.push({ lat: c.lat, lng: c.lon, d, name: t.name || "" });
+  }
+  buildings.sort((a, b) => a.d - b.d);
+  roads.sort((a, b) => a.d - b.d);
+  fire.sort((a, b) => a.d - b.d);
+  return { buildings, roads, fire };
+}
+
+/** OpenStreetMap(Overpass):点を含む土地利用(農地かどうかの手がかり)。 */
+async function fetchLanduse(lat, lng) {
+  const els = await overpass(`[out:json][timeout:25];is_in(${lat},${lng})->.a;area.a["landuse"];out tags;`);
+  return els.map((e) => (e.tags && e.tags.landuse) || "").filter(Boolean);
+}
+
+/**
+ * 国土交通省 不動産情報ライブラリ(中継サーバー経由):点を含む都市計画のポリゴンの属性。
+ * layer: "XKT001"(区域区分) または "XKT002"(用途地域)。PROXY_URL が空なら null を返す。
+ */
+async function fetchMlit(layer, lat, lng) {
+  if (!CONFIG.PROXY_URL) return null;
+  const z = 15;
+  const { x, y } = lngLatToTile(lng, lat, z);
+  const r = await withTimeout(`${CONFIG.PROXY_URL.replace(/\/$/, "")}/${layer}?z=${z}&x=${x}&y=${y}`, {}, 20000);
+  if (!r.ok) throw new Error(layer + " " + r.status);
+  const j = await r.json();
+  return (j.features || []).filter((f) => featureContains(f, lng, lat)).map((f) => f.properties || {});
+}
+
+// 判定のルール。取得したデータ(ctx)から「項目ごとの表示内容」を作る。
+// 状態: ok=データを取得し出典あり(確認済み) / warn=確認済みだが注意 / todo=未確認(要確認)
+
+
+const OSM = { title: "OpenStreetMap contributors(Overpass API)", url: "https://www.openstreetmap.org/copyright" };
+const MLIT = { title: "国土交通省 不動産情報ライブラリ(都市計画情報)", url: "https://www.reinfolib.mlit.go.jp/" };
+const EGOV = { title: "e-Gov法令検索", url: "https://laws.e-gov.go.jp/" };
+
+const ROAD_JA = {
+  motorway: "高速道路", trunk: "幹線道路", primary: "主要道路", secondary: "二次道路", tertiary: "三次道路",
+  residential: "住宅地の道路", unclassified: "一般道", service: "敷地内・サービス道路", track: "農道・林道(未舗装の可能性)",
+  path: "歩道・小道", footway: "歩道", living_street: "生活道路"
+};
+
+function findRule(rules, code) {
+  if (!code) return null;
+  if (rules[code]) return rules[code];
+  for (const k of Object.keys(rules)) if (k.endsWith("*") && code.startsWith(k.slice(0, -1))) return rules[k];
+  return null;
+}
+
+function mlitRow(label, st, build) {
+  if (st.state === "off") return { label, text: "未確認:中継サーバー(PROXY_URL)が未設定のため取得していません", status: "todo", source: MLIT, hint: "README の手順で国の API キーと中継サーバーを設定すると、ここに自動で入ります" };
+  if (st.state === "err") return { label, text: "未確認:取得に失敗しました(" + st.error + ")", status: "todo", source: MLIT, hint: "時間をおいて再実行、または市の都市計画課・公開GISで確認" };
+  if (!st.rows.length) return { label, text: "未確認:この地点に該当する区域が返りませんでした(都市計画区域外の可能性)", status: "todo", source: MLIT, hint: "都市計画区域外かどうかを市に確認" };
+  return { label, text: build(st.rows[0]), status: "ok", source: MLIT, hint: "データの更新時期により現況と異なる場合があります" };
+}
+
+function evaluate(ctx) {
+  const { muni, nearby, landuse, mlit, rules } = ctx;
+  const rule = muni ? findRule(rules, muni.code) : null;
+  const sections = [];
+
+  // ---------- 1. 土地の規制 ----------
+  const kubunText = mlit.kubun.state === "ok" && mlit.kubun.rows[0] ? (mlit.kubun.rows[0].area_classification_ja || "") : "";
+  const isUrban = /市街化区域/.test(kubunText) && !/調整/.test(kubunText);
+  const isAdjust = /市街化調整/.test(kubunText);
+
+  const land = [];
+  land.push(mlitRow("区域区分(市街化区域など)", mlit.kubun, (p) => p.area_classification_ja || "区分名の取得なし"));
+  land.push(mlitRow("用途地域", mlit.zoning, (p) => {
+    const t = [p.use_area_ja || "名称なし"];
+    if (p.u_building_coverage_ratio_ja) t.push("建ぺい率 " + p.u_building_coverage_ratio_ja);
+    if (p.u_floor_area_ratio_ja) t.push("容積率 " + p.u_floor_area_ratio_ja);
+    return t.join(" / ");
+  }));
+
+  const farm = landuse ? landuse.filter((x) => CONFIG.FARMLAND.includes(x)) : null;
+  let farmText = "農地転用の要否は、登記・現況・農業委員会の判断で決まります。";
+  if (farm === null) farmText = "未確認:土地利用の取得に失敗しました。" + farmText;
+  else if (farm.length) farmText = "農地の可能性あり(地図上の土地利用: " + [...new Set(farm)].join("、") + ")。" + farmText;
+  else farmText = "地図上では農地の記載なし(未登録の場合あり)。" + farmText;
+  if (isUrban) farmText += " 市街化区域のため、農地であれば転用は届出で足りる可能性(農業委員会に要確認)。";
+  else if (isAdjust) farmText += " 市街化調整区域のため、農地であれば転用許可・開発許可とも厳しい判断になる可能性(要確認)。";
+  else farmText += " 農地であれば農地法第4条・第5条の許可(市街化区域は届出)が論点になります。";
+  land.push({ label: "農地転用の見込み", text: farmText, status: "todo", source: EGOV, hint: "登記簿の地目と農業委員会への確認が必要。OSMは農地の網羅的な台帳ではありません" });
+
+  let devText = "開発許可(都市計画法第29条)の要否と見込みは、敷地の規模・区域区分・計画内容で決まります。";
+  if (isUrban) devText += " 市街化区域では一定規模以上(原則1,000㎡以上と言われる)で必要になる可能性。";
+  else if (isAdjust) devText += " 市街化調整区域は原則抑制のため、許可の見込みは個別に厳しく審査される可能性。";
+  else devText += " 非線引き区域等では3,000㎡以上が目安とされる場合あり。";
+  devText += " 規模・扱いは自治体の運用で異なるため要確認。";
+  land.push({ label: "開発許可の見込み", text: devText, status: "todo", source: EGOV, hint: "都道府県・市の開発許可担当に事前相談(蓄電所が開発行為に当たるかも要確認)" });
+  sections.push({ id: "land", title: "土地の規制", rows: land });
+
+  // ---------- 2. 周辺住宅との距離と市の基準 ----------
+  const dist = [];
+  if (!nearby) {
+    dist.push({ label: "最寄りの住宅系建物", text: "未確認:周辺建物の取得に失敗しました", status: "todo", source: OSM, hint: "時間をおいて再実行、または現地・航空写真で確認" });
+  } else {
+    const res = nearby.buildings.filter((b) => b.res);
+    const any = nearby.buildings;
+    const lim = rule && rule.distance_m;
+    const rad = lim || CONFIG.REF_RADIUS_M;
+    const within = res.filter((b) => b.d <= rad).length;
+    if (res.length) {
+      const nearest = res[0].d;
+      let t = "約" + round5(nearest) + "m(半径" + rad + "m以内に " + within + "棟)";
+      let st = "ok";
+      if (lim && nearest < lim) { t += " → 市の基準 " + lim + "m より近い"; st = "warn"; }
+      dist.push({ label: "最寄りの住宅系建物", text: t, status: st, source: OSM, hint: "概算。OSMに未登録の家があると実際より遠く出ます。種別が不明な建物(yes)は住宅に数えていません" });
+    } else {
+      dist.push({ label: "最寄りの住宅系建物", text: "800m以内に住宅系の建物は見つかりませんでした(建物全体 " + any.length + "棟)", status: "ok", source: OSM, hint: "OSMの登録漏れの可能性があります。航空写真で必ず確認" });
+    }
+    if (any.length && (!res.length || any[0].d < (res[0] || any[0]).d)) {
+      dist.push({ label: "最寄りの建物(種別不問)", text: "約" + round5(any[0].d) + "m(種別: " + any[0].type + ")", status: "ok", source: OSM, hint: "住宅か事業用かは地図上では判別できない場合があります" });
+    }
+  }
+  if (rule && rule.distance_m) {
+    const d = rule.documents && rule.documents[0];
+    const sourced = !!(d && d.url);
+    dist.push({ label: "市の距離の基準(" + rule.name + ")", text: rule.distance_text, status: sourced ? "ok" : "todo", source: d ? { title: d.title, url: d.url } : null, hint: sourced ? "" : "出典URL未登録。市の公開原文で数値と対象設備を確認" });
+  } else {
+    dist.push({ label: "市の距離の基準", text: "未確認:この市の基準は未登録です", status: "todo", source: null, hint: muni ? "下の『条例・ガイドライン』のリンクから市の公開ページで確認し、data/municipalities.json に追記" : "" });
+  }
+  sections.push({ id: "dist", title: "周辺住宅との距離と市の基準", rows: dist });
+
+  // ---------- 3. 条例・ガイドライン・手続き・様式 ----------
+  const ord = [];
+  if (rule) {
+    for (const d of rule.documents || []) {
+      ord.push({ label: "条例・ガイドライン", text: d.title + (d.note ? "(" + d.note + ")" : ""), status: d.url ? "ok" : "todo", source: d.url ? { title: d.title, url: d.url } : null, hint: d.url ? "" : "出典URL未登録。市の公開原文で最新版・対象設備を確認" });
+    }
+    ord.push({ label: "必要な手続き・様式", text: rule.forms || "未確認:様式の情報は未登録です", status: "todo", source: null, hint: "届出・協議の時期(着工何日前か等)は原文で確認" });
+    for (const n of rule.notes || []) ord.push({ label: "留意点", text: n, status: "todo", source: null, hint: "" });
+  } else {
+    const q = encodeURIComponent((muni && muni.name ? muni.name : "") + " 発電設備 蓄電所 条例 ガイドライン");
+    ord.push({ label: "条例・ガイドライン", text: "未確認:" + (muni && muni.name ? muni.name : "この市") + "の基準は未登録です", status: "todo", source: { title: "市の公開ページを検索(参考リンク)", url: "https://www.google.com/search?q=" + q }, hint: "原文を確認したら data/municipalities.json に追記すると、次回から表示されます" });
+    ord.push({ label: "必要な手続き・様式", text: "未確認:市の原文で確認してください", status: "todo", source: null, hint: "" });
+  }
+  sections.push({ id: "ord", title: "市の条例・ガイドラインと、必要な手続き・様式", rows: ord });
+
+  // ---------- 4. 注意点 ----------
+  const care = [];
+  if (nearby) {
+    const res = nearby.buildings.filter((b) => b.res);
+    const n300 = res.filter((b) => b.d <= 300).length;
+    care.push({ label: "住民", text: "300m以内の住宅系建物 約" + n300 + "棟。説明会・周知の要否と範囲は市の基準と事業者判断(上の基準を確認)", status: "todo", source: OSM, hint: "棟数は概算。住民への説明そのものは事業者が行います" });
+    const r = nearby.roads[0];
+    if (r) {
+      const w = r.width ? "、幅員タグ " + r.width + "m" : "";
+      care.push({ label: "道路・搬入", text: "約" + round5(r.d) + "m以内に " + (ROAD_JA[r.cls] || r.cls) + (r.name ? "(" + r.name + ")" : "") + w, status: "todo", source: OSM, hint: "地図上の道路の有無のみ。大型車の通行可否・幅員・接道条件は現地と道路管理者で確認" });
+    } else {
+      care.push({ label: "道路・搬入", text: "60m以内に道路が見つかりません(接道なしの可能性)", status: "todo", source: OSM, hint: "接道の有無は現地・公図で必ず確認" });
+    }
+    const f = nearby.fire[0];
+    care.push({ label: "消防", text: f ? "最寄りの消防署 約" + (f.d / 1000).toFixed(1) + "km" + (f.name ? "(" + f.name + ")" : "") : "10km以内に消防署が見つかりません(未登録の可能性)", status: "todo", source: OSM, hint: "蓄電設備の消防協議・届出の要否は管轄の消防本部に確認" });
+  } else {
+    for (const l of ["住民", "道路・搬入", "消防"]) care.push({ label: l, text: "未確認:周辺データの取得に失敗しました", status: "todo", source: OSM, hint: "" });
+  }
+  sections.push({ id: "care", title: "注意点(住民・道路搬入・消防)", rows: care });
+
+  let ok = 0, todo = 0, warn = 0;
+  for (const s of sections) for (const r of s.rows) { if (r.status === "ok") ok++; else if (r.status === "warn") { ok++; warn++; } else todo++; }
+  return { sections, ok, todo, warn, radius: (rule && rule.distance_m) || CONFIG.REF_RADIUS_M };
+}
+
+const RULES_DATA = {"_README": "市ごとの基準。キーは市区町村コード(5桁)。url が null の項目は『出典URL未登録』として表示され、確認済みにはなりません。公的な原文URLを入れると『確認済み』になります。ここに書く内容は公開されている条例・ガイドラインだけにしてください。", "07201": {"name": "福島市", "distance_m": 300, "distance_text": "住宅から300m(ガイドラインの距離の目安)", "documents": [{"title": "福島市のガイドライン(2026年5月13日付)", "note": "対象となる設備の範囲(蓄電所・低圧を含むか)は市への確認が必要", "url": null}], "forms": "様式1〜11。事業者が変わる場合は様式2の変更届", "notes": ["適用範囲の確認が最優先(蓄電所が対象か)"]}, "04202": {"name": "石巻市", "distance_m": null, "distance_text": null, "documents": [{"title": "石巻市の条例・ガイドライン(2026年4月施行予定と把握)", "note": "施行状況と対象設備は市に要確認", "url": null}], "forms": null, "notes": []}, "2213*": {"name": "浜松市(区コード共通で判定)", "distance_m": null, "distance_text": null, "documents": [{"title": "浜松市の要綱(2025年12月)", "note": "対象設備と内容は市に要確認", "url": null}], "forms": null, "notes": []}};
+
+
+
+const PRESETS = [
+  { id: "kita", label: "北広島市(蓄電所の例)", lat: 42.9847, lng: 141.5627, z: 15 },
+  { id: "fuku", label: "福島市", lat: 37.7608, lng: 140.4747, z: 15 },
+  { id: "japan", label: "日本全体", lat: 37.5, lng: 137.5, z: 5, noRun: true }
+];
+const STATUS_LABEL = { ok: "確認済み", warn: "確認済み・注意", todo: "未確認" };
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let map, marker, circle, layer, rules = {}, seq = 0;
+
+async function init() {
+  rules = RULES_DATA;
+  map = L.map("map").setView([37.5, 137.5], 5);
+  L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png", {
+    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>',
+    maxZoom: 18
+  }).addTo(map);
+  layer = L.layerGroup().addTo(map);
+  marker = L.marker([37.5, 137.5], { draggable: true });
+  marker.on("dragend", () => { const p = marker.getLatLng(); run(p.lat, p.lng, false); });
+  map.on("click", (e) => run(e.latlng.lat, e.latlng.lng, false));
+
+  $("presets").innerHTML = PRESETS.map((p) => `<button type="button" data-id="${p.id}">${esc(p.label)}</button>`).join("");
+  $("presets").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    const p = PRESETS.find((x) => x.id === b.dataset.id);
+    if (p.noRun) { map.setView([p.lat, p.lng], p.z); return; }
+    run(p.lat, p.lng, true, p.z);
+  });
+  $("proxyNote").hidden = !!CONFIG.PROXY_URL;
+  $("result").innerHTML = '<p class="hint">地図をクリックするか、ピンを動かすと、その地点を判定します。</p>';
+}
+
+async function run(lat, lng, fly, z) {
+  const my = ++seq;
+  marker.setLatLng([lat, lng]).addTo(map);
+  if (fly) map.setView([lat, lng], z || 15);
+  $("result").innerHTML = '<p class="hint">取得中…(地図データの混雑時は十数秒かかります)</p>';
+
+  const settle = async (p) => { try { return { v: await p }; } catch (e) { return { e: e.message || String(e) }; } };
+  const mlitState = async (layerName) => {
+    if (!CONFIG.PROXY_URL) return { state: "off" };
+    const r = await settle(fetchMlit(layerName, lat, lng));
+    return r.e ? { state: "err", error: r.e } : { state: "ok", rows: r.v || [] };
+  };
+  // Overpass への同時アクセスを避けるため、OSM系は順番に取得。国の API・住所は並行。
+  const geoP = settle(reverseGeocode(lat, lng));
+  const kP = mlitState("XKT001"), zP = mlitState("XKT002");
+  const nb = await settle(fetchNearby(lat, lng));
+  const lu = await settle(fetchLanduse(lat, lng));
+  const [geo, kubun, zoning] = await Promise.all([geoP, kP, zP]);
+  if (my !== seq) return; // 後から押された操作を優先
+
+  const muni = geo.v || null;
+  const nearby = nb.v || null;
+  const res = evaluate({ muni, nearby, landuse: lu.v || null, mlit: { kubun, zoning }, rules });
+  draw(lat, lng, nearby, res.radius);
+  render(muni, geo.e, res);
+}
+
+function draw(lat, lng, nearby, radius) {
+  layer.clearLayers();
+  if (circle) { circle = null; }
+  L.circle([lat, lng], { radius, color: "#b45309", weight: 1.5, fillOpacity: 0.05 }).addTo(layer);
+  if (!nearby) return;
+  for (const b of nearby.buildings.slice(0, 300)) {
+    L.circleMarker([b.lat, b.lng], { radius: b.res ? 3.5 : 2, color: b.res ? "#b91c1c" : "#6b7280", weight: 1, fillOpacity: 0.8 }).addTo(layer);
+  }
+  const n = nearby.buildings.find((b) => b.res);
+  if (n) L.polyline([[lat, lng], [n.lat, n.lng]], { color: "#b91c1c", weight: 2, dashArray: "4 4" }).addTo(layer);
+}
+
+function srcHtml(s) {
+  if (!s) return '<span class="nosrc">出典なし</span>';
+  return s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title);
+}
+
+function render(muni, geoErr, res) {
+  const head = muni
+    ? `<h2>${esc(muni.name || "市区町村コード " + muni.code)}<small>${esc(muni.detail || "")}</small></h2>`
+    : `<h2>所在地を特定できません<small>${esc(geoErr || "日本国外・海上の可能性")}</small></h2>`;
+  const counts = `<p class="counts"><span class="chip ok">確認済み ${res.ok}</span><span class="chip todo">未確認 ${res.todo}</span>${res.warn ? `<span class="chip warn">注意 ${res.warn}</span>` : ""}</p>`;
+  const body = res.sections.map((s) => `
+    <section><h3>${esc(s.title)}</h3>
+    ${s.rows.map((r) => `
+      <div class="row ${r.status}">
+        <div class="lab"><span class="badge ${r.status}">${STATUS_LABEL[r.status]}</span>${esc(r.label)}</div>
+        <div class="txt">${esc(r.text)}</div>
+        <div class="src">出典: ${srcHtml(r.source)}${r.hint ? `<br><span class="h">${esc(r.hint)}</span>` : ""}</div>
+      </div>`).join("")}
+    </section>`).join("");
+  $("result").innerHTML = head + counts + body +
+    '<p class="foot">これは一次スクリーニングです。許認可・法的判断・自治体の見解の代わりにはなりません。「未確認」は必ず原典・窓口で確認してください。</p>';
+}
+
+init();
+
+</script>
+</body>
+</html>
