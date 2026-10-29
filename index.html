@@ -73,7 +73,8 @@ const CONFIG = {
   PROXY_URL: params.get("proxy") || "",
   OVERPASS: [
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.kumi.systems/api/interpreter"
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter"
   ],
   // 地図に描く参考の円(m)。市のルールに距離の基準があれば、その値に置き換わる
   REF_RADIUS_M: 300,
@@ -147,7 +148,8 @@ async function reverseGeocode(lat, lng) {
   if (!code) return null;
   let name = null;
   try {
-    const rec = window.MUNI_ARRAY && window.MUNI_ARRAY[code];
+    const M = window.MUNI_ARRAY || {};
+    const rec = M[code] || M[String(Number(code))] || M[code.replace(/^0+/, "")];
     if (rec) { const p = String(rec).split(","); name = (p[1] || "") + (p[3] || ""); }
   } catch (e) { /* 名前なし */ }
   return { code, name, detail: j.results.lv01Nm || "" };
@@ -155,38 +157,44 @@ async function reverseGeocode(lat, lng) {
 
 async function overpass(query) {
   const body = "data=" + encodeURIComponent(query);
-  let lastErr;
-  for (const url of CONFIG.OVERPASS) {
-    try {
-      const r = await withTimeout(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }, 25000);
-      if (!r.ok) throw new Error("overpass " + r.status);
-      return (await r.json()).elements || [];
-    } catch (e) { lastErr = e; }
+  const errs = [];
+  for (let round = 0; round < 2; round++) {
+    for (const url of CONFIG.OVERPASS) {
+      try {
+        const r = await withTimeout(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }, 40000);
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const j = await r.json();
+        if (j.remark && /error|timed out/i.test(j.remark) && !(j.elements || []).length) throw new Error("サーバー混雑");
+        return j.elements || [];
+      } catch (e) { errs.push(new URL(url).hostname + ": " + (e.name === "AbortError" ? "タイムアウト" : e.message)); }
+    }
   }
-  throw lastErr;
+  throw new Error(errs.slice(-2).join(" / "));
 }
 
-/** OpenStreetMap(Overpass):周辺の建物・道路・消防署。 */
+/** OpenStreetMap(Overpass):周辺の建物・道路・消防署。3つを別々に取り、取れたものだけ使う。 */
 async function fetchNearby(lat, lng) {
-  const q = `[out:json][timeout:25];
-(way["building"](around:800,${lat},${lng}););out center tags 500;
-(way["highway"](around:60,${lat},${lng}););out center tags 60;
-(nwr["amenity"="fire_station"](around:10000,${lat},${lng}););out center tags 20;`;
-  const els = await overpass(q);
-  const buildings = [], roads = [], fire = [];
-  for (const e of els) {
-    const t = e.tags || {};
-    const c = e.center || (e.lat != null ? { lat: e.lat, lon: e.lon } : null);
-    if (!c) continue;
-    const d = hav(lat, lng, c.lat, c.lon);
-    if (t.building) buildings.push({ lat: c.lat, lng: c.lon, d, type: t.building, res: CONFIG.RESIDENTIAL.includes(t.building) });
-    else if (t.highway) roads.push({ cls: t.highway, name: t.name || "", width: t.width || "", d });
-    else if (t.amenity === "fire_station") fire.push({ lat: c.lat, lng: c.lon, d, name: t.name || "" });
-  }
-  buildings.sort((a, b) => a.d - b.d);
-  roads.sort((a, b) => a.d - b.d);
-  fire.sort((a, b) => a.d - b.d);
-  return { buildings, roads, fire };
+  const out = { buildings: null, roads: null, fire: null, errors: {} };
+  const pt = (e) => e.center || (e.lat != null ? { lat: e.lat, lon: e.lon } : null);
+  try {
+    const els = await overpass(`[out:json][timeout:30];way["building"](around:600,${lat},${lng});out center tags 400;`);
+    out.buildings = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
+      return { lat: c.lat, lng: c.lon, d: hav(lat, lng, c.lat, c.lon), type: t.building || "yes", res: CONFIG.RESIDENTIAL.includes(t.building) }; })
+      .filter(Boolean).sort((a, b) => a.d - b.d);
+  } catch (e) { out.errors.buildings = e.message; }
+  try {
+    const els = await overpass(`[out:json][timeout:30];way["highway"](around:60,${lat},${lng});out center tags 60;`);
+    out.roads = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
+      return { cls: t.highway, name: t.name || "", width: t.width || "", d: hav(lat, lng, c.lat, c.lon) }; })
+      .filter(Boolean).sort((a, b) => a.d - b.d);
+  } catch (e) { out.errors.roads = e.message; }
+  try {
+    const els = await overpass(`[out:json][timeout:30];nwr["amenity"="fire_station"](around:10000,${lat},${lng});out center tags 20;`);
+    out.fire = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
+      return { lat: c.lat, lng: c.lon, d: hav(lat, lng, c.lat, c.lon), name: t.name || "" }; })
+      .filter(Boolean).sort((a, b) => a.d - b.d);
+  } catch (e) { out.errors.fire = e.message; }
+  return out;
 }
 
 /** OpenStreetMap(Overpass):点を含む土地利用(農地かどうかの手がかり)。 */
@@ -258,7 +266,7 @@ function evaluate(ctx) {
 
   const farm = landuse ? landuse.filter((x) => CONFIG.FARMLAND.includes(x)) : null;
   let farmText = "農地転用の要否は、登記・現況・農業委員会の判断で決まります。";
-  if (farm === null) farmText = "未確認:土地利用の取得に失敗しました。" + farmText;
+  if (farm === null) farmText = "未確認:土地利用の取得に失敗しました(" + (ctx.landuseErr || "原因不明") + ")。" + farmText;
   else if (farm.length) farmText = "農地の可能性あり(地図上の土地利用: " + [...new Set(farm)].join("、") + ")。" + farmText;
   else farmText = "地図上では農地の記載なし(未登録の場合あり)。" + farmText;
   if (isUrban) farmText += " 市街化区域のため、農地であれば転用は届出で足りる可能性(農業委員会に要確認)。";
@@ -276,8 +284,8 @@ function evaluate(ctx) {
 
   // ---------- 2. 周辺住宅との距離と市の基準 ----------
   const dist = [];
-  if (!nearby) {
-    dist.push({ label: "最寄りの住宅系建物", text: "未確認:周辺建物の取得に失敗しました", status: "todo", source: OSM, hint: "時間をおいて再実行、または現地・航空写真で確認" });
+  if (!nearby.buildings) {
+    dist.push({ label: "最寄りの住宅系建物", text: "未確認:周辺建物の取得に失敗しました(" + (nearby.errors.buildings || nearby.errors.all || "原因不明") + ")", status: "todo", source: OSM, hint: "時間をおいて同じ地点をもう一度押す。または現地・航空写真で確認" });
   } else {
     const res = nearby.buildings.filter((b) => b.res);
     const any = nearby.buildings;
@@ -323,22 +331,22 @@ function evaluate(ctx) {
 
   // ---------- 4. 注意点 ----------
   const care = [];
-  if (nearby) {
-    const res = nearby.buildings.filter((b) => b.res);
-    const n300 = res.filter((b) => b.d <= 300).length;
+  const fail = (k) => "未確認:取得に失敗しました(" + (nearby.errors[k] || nearby.errors.all || "原因不明") + ")";
+  if (nearby.buildings) {
+    const n300 = nearby.buildings.filter((b) => b.res && b.d <= 300).length;
     care.push({ label: "住民", text: "300m以内の住宅系建物 約" + n300 + "棟。説明会・周知の要否と範囲は市の基準と事業者判断(上の基準を確認)", status: "todo", source: OSM, hint: "棟数は概算。住民への説明そのものは事業者が行います" });
+  } else care.push({ label: "住民", text: fail("buildings"), status: "todo", source: OSM, hint: "" });
+  if (nearby.roads) {
     const r = nearby.roads[0];
     if (r) {
       const w = r.width ? "、幅員タグ " + r.width + "m" : "";
       care.push({ label: "道路・搬入", text: "約" + round5(r.d) + "m以内に " + (ROAD_JA[r.cls] || r.cls) + (r.name ? "(" + r.name + ")" : "") + w, status: "todo", source: OSM, hint: "地図上の道路の有無のみ。大型車の通行可否・幅員・接道条件は現地と道路管理者で確認" });
-    } else {
-      care.push({ label: "道路・搬入", text: "60m以内に道路が見つかりません(接道なしの可能性)", status: "todo", source: OSM, hint: "接道の有無は現地・公図で必ず確認" });
-    }
+    } else care.push({ label: "道路・搬入", text: "60m以内に道路が見つかりません(接道なしの可能性)", status: "todo", source: OSM, hint: "接道の有無は現地・公図で必ず確認" });
+  } else care.push({ label: "道路・搬入", text: fail("roads"), status: "todo", source: OSM, hint: "" });
+  if (nearby.fire) {
     const f = nearby.fire[0];
     care.push({ label: "消防", text: f ? "最寄りの消防署 約" + (f.d / 1000).toFixed(1) + "km" + (f.name ? "(" + f.name + ")" : "") : "10km以内に消防署が見つかりません(未登録の可能性)", status: "todo", source: OSM, hint: "蓄電設備の消防協議・届出の要否は管轄の消防本部に確認" });
-  } else {
-    for (const l of ["住民", "道路・搬入", "消防"]) care.push({ label: l, text: "未確認:周辺データの取得に失敗しました", status: "todo", source: OSM, hint: "" });
-  }
+  } else care.push({ label: "消防", text: fail("fire"), status: "todo", source: OSM, hint: "" });
   sections.push({ id: "care", title: "注意点(住民・道路搬入・消防)", rows: care });
 
   let ok = 0, todo = 0, warn = 0;
@@ -406,8 +414,8 @@ async function run(lat, lng, fly, z) {
   if (my !== seq) return; // 後から押された操作を優先
 
   const muni = geo.v || null;
-  const nearby = nb.v || null;
-  const res = evaluate({ muni, nearby, landuse: lu.v || null, mlit: { kubun, zoning }, rules });
+  const nearby = nb.v || { buildings: null, roads: null, fire: null, errors: { all: nb.e } };
+  const res = evaluate({ muni, nearby, landuse: lu.v || null, landuseErr: lu.e, mlit: { kubun, zoning }, rules });
   draw(lat, lng, nearby, res.radius);
   render(muni, geo.e, res);
 }
@@ -416,7 +424,7 @@ function draw(lat, lng, nearby, radius) {
   layer.clearLayers();
   if (circle) { circle = null; }
   L.circle([lat, lng], { radius, color: "#b45309", weight: 1.5, fillOpacity: 0.05 }).addTo(layer);
-  if (!nearby) return;
+  if (!nearby.buildings) return;
   for (const b of nearby.buildings.slice(0, 300)) {
     L.circleMarker([b.lat, b.lng], { radius: b.res ? 3.5 : 2, color: b.res ? "#b91c1c" : "#6b7280", weight: 1, fillOpacity: 0.8 }).addTo(layer);
   }
