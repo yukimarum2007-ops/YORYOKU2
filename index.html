@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>立地評価 一次スクリーニング</title>
+<title>福島市 立地診断(系統用蓄電池 一次スクリーニング)</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
 :root{--bg:#f6f5f1;--card:#fff;--ink:#1f2937;--mute:#6b7280;--line:#e5e7eb;--ok:#166534;--okbg:#dcfce7;--todo:#92400e;--todobg:#fef3c7;--warn:#991b1b;--warnbg:#fee2e2;--link:#1d4ed8}
@@ -41,24 +41,83 @@ main{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px;p
 .hint,.note{color:var(--mute);font-size:13px}
 .note{background:var(--todobg);color:var(--todo);padding:8px 10px;border-radius:6px}
 .foot{margin-top:16px;font-size:12px;color:var(--mute)}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.controls label{display:flex;flex-direction:column;font-size:12px;color:var(--mute);gap:2px}
+.controls input,.controls select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);min-width:0}
+.controls .mini{grid-column:1/-1;margin:0;font-size:12px;color:var(--mute)}
+.controls .mini a{color:var(--link)}
+#reportBtn{grid-column:1/-1;padding:10px;border:0;border-radius:8px;background:#1d4ed8;color:#fff;font:inherit;font-weight:700;cursor:pointer}
+#reportBtn:disabled{background:var(--line);color:var(--mute);cursor:not-allowed}
+.chip.est,.badge.est{background:#dbeafe;color:#1e40af}
+.badge.user{background:var(--okbg);color:var(--ok);outline:1px solid var(--ok)}
+.act{margin-top:6px}
+.act input{font:inherit;font-size:13px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;margin:2px 6px 2px 0;width:min(100%,280px);background:var(--card);color:var(--ink)}
+button.small{font:inherit;font-size:12px;padding:3px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);cursor:pointer}
+button.link{font:inherit;font-size:12px;border:0;background:none;color:var(--link);cursor:pointer;text-decoration:underline}
+.conf{font-size:12px;color:var(--ok);margin:2px 0}
+#report{position:fixed;inset:0;background:#fff;color:#111;overflow:auto;z-index:2000;padding:0 0 40px}
+#report[hidden]{display:none}
+.reportbar{position:sticky;top:0;background:#f3f4f6;padding:8px 16px;display:flex;gap:8px;border-bottom:1px solid #d1d5db;z-index:5}
+.reportbar button{font:inherit;padding:6px 14px;border:1px solid #9ca3af;border-radius:6px;background:#fff;cursor:pointer}
+#reportBody{max-width:900px;margin:0 auto;padding:16px 20px;font-size:13px;line-height:1.55}
+#reportBody h1{font-size:22px;margin:8px 0}
+#reportBody h2{font-size:15px;margin:18px 0 6px;border-bottom:2px solid #111;padding-bottom:2px}
+#reportBody .meta{color:#444;font-size:12px;margin:4px 0}
+#reportBody .sum{margin:8px 0}
+#rmap{height:340px;border:1px solid #999;margin:8px 0}
+#reportBody table{width:100%;border-collapse:collapse;font-size:12px}
+#reportBody th,#reportBody td{border:1px solid #bbb;padding:4px 6px;vertical-align:top;text-align:left}
+#reportBody th{background:#f3f4f6}
+#reportBody td small{color:#555;overflow-wrap:anywhere}
+#reportBody .badge{white-space:nowrap}
+@media print{
+  body.printing #app,.reportbar{display:none !important}
+  body.printing{background:#fff}
+  #report{position:static;overflow:visible}
+  #reportBody{max-width:none;padding:0}
+  #reportBody table,#reportBody tr{page-break-inside:avoid}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+
+.overlays{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;font-size:12px;margin:0 0 8px;color:var(--mute)}
+.overlays label{display:flex;gap:4px;align-items:center;color:var(--ink)}
+.overlays a{color:var(--link)}
 </style>
 </head>
 <body>
+<div id="app">
 <header>
-  <h1>立地評価 一次スクリーニング</h1>
-  <p>地図で地点を選ぶと、土地の規制・周辺住宅との距離・市の基準・注意点を1ページにまとめます。各項目に「確認済み/未確認」と出典を付けます。</p>
+  <h1>福島市 立地診断(系統用蓄電池 一次スクリーニング)</h1>
+  <p>地図で地点を選ぶと、土地の規制・周辺住宅との距離・市の基準・手続き・注意点を1ページにまとめ、診断書にできます。各項目に「確認済み/見込み/未確認」と出典を付けます。</p>
 </header>
 <main>
   <div class="mapcol">
     <div id="presets" class="presets"></div>
+    <div class="overlays"><span>ハザードの重ね表示(ガイドラインの「回避すべき区域」の目視確認用):</span>
+      <label><input type="checkbox" id="ov_flood"> 洪水浸水想定区域</label>
+      <label><input type="checkbox" id="ov_dosha"> 土砂災害警戒区域</label>
+      <a href="https://disaportal.gsi.go.jp/" target="_blank" rel="noopener">重ねるハザードマップ</a></div>
     <div id="map"></div>
-    <p class="attr">地図: 国土地理院 / 建物・道路・消防署: © OpenStreetMap contributors / 都市計画: 国土交通省 不動産情報ライブラリ</p>
+    <p class="attr">地図: 国土地理院 / 建物・道路・消防署: © OpenStreetMap contributors / 福島市・国土交通省の公開情報</p>
   </div>
   <aside id="panel">
-    <p id="proxyNote" class="note" hidden>用途地域・区域区分は、国のAPI用の中継サーバーが未設定のため「未確認」と表示されます(README参照)。</p>
+    <div class="controls">
+      <label>敷地面積(㎡)<input id="area" inputmode="numeric" placeholder="例: 2000"></label>
+      <label>区域区分<select id="kubun"></select></label>
+      <label>用途地域<select id="zoning"></select></label>
+      <label>地図の円の半径<select id="radius"><option value="100">100m</option><option value="200">200m</option><option value="300" selected>300m</option><option value="500">500m</option></select></label>
+      <p class="mini">区域区分・用途地域は<a href="https://www.city.fukushima.fukushima.jp/soshiki/2/1005/1/2891.html" target="_blank" rel="noopener">ふくしまeマップ</a>または都市計画課(024-525-3761)で調べて選ぶと、開発許可・農地転用の見込みが出ます。</p>
+      <button id="reportBtn" type="button" disabled>診断書を作る</button>
+    </div>
+    <p id="proxyNote" class="note" hidden>国のAPIの中継サーバーが未設定のため、区域区分・用途地域は自動取得せず、上の欄の入力値を使います。</p>
     <div id="result"></div>
   </aside>
 </main>
+</div>
+<div id="report" hidden>
+  <div class="reportbar"><button id="printBtn" type="button">印刷 / PDFで保存</button><button id="closeReport" type="button">閉じる</button></div>
+  <div id="reportBody"></div>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://maps.gsi.go.jp/js/muni.js"></script>
 <script type="module">
@@ -230,13 +289,30 @@ async function fetchMlit(layer, lat, lng) {
   return (j.features || []).filter((f) => featureContains(f, lng, lat)).map((f) => f.properties || {});
 }
 
-// 判定のルール。取得したデータ(ctx)から「項目ごとの表示内容」を作る。
-// 状態: ok=データを取得し出典あり(確認済み) / warn=確認済みだが注意 / todo=未確認(要確認)
+// 福島市専用の判定ルール(福島市系統用蓄電池設備ガイドライン 令和8年5月13日制定 ほか、福島市の公式ページに基づく)。
+// 「確認済み」= 福島市の公式ページ等で内容を確認でき、出典URLがあるもの、または地図データを実際に取得できたもの。
+// 「見込み」= 確認済みの基準に、この敷地の条件(区域区分・面積)を当てはめた推定。
+// 「未確認」= 調べても確認できなかったもの/この敷地では確かめられていないもの。
+// 状態: ok / warn / est / todo  ※ user(自社確認)は画面側で後から付く
 
 
-const OSM = { title: "OpenStreetMap contributors(Overpass API)", url: "https://www.openstreetmap.org/copyright" };
-const MLIT = { title: "国土交通省 不動産情報ライブラリ(都市計画情報)", url: "https://www.reinfolib.mlit.go.jp/" };
-const EGOV = { title: "e-Gov法令検索", url: "https://laws.e-gov.go.jp/" };
+const B = "https://www.city.fukushima.fukushima.jp/";
+const SRC = {
+  GUIDE: { title: "福島市系統用蓄電池設備ガイドライン(令和8年5月13日制定)本体", url: B + "material/files/group/20/guide.pdf" },
+  GAIYOU: { title: "福島市系統用蓄電池設備に関するガイドラインの概要", url: B + "material/files/group/22/guidegaiyou.pdf" },
+  PAGE: { title: "福島市「系統用蓄電池」(企業振興課)", url: B + "soshiki/5/1018/2/15311.html" },
+  WINDOW: { title: "福島市「主な関係法令等の手続及び窓口」", url: B + "material/files/group/20/tantoumadoguchi.pdf" },
+  DEV: { title: "福島市「開発行為に該当する行為及び開発許可が必要となる面積」", url: B + "faq/machizukuri-kankyo/6/1488.html" },
+  DEVPAGE: { title: "福島市「開発指導」(開発建築指導課)", url: B + "soshiki/12/1061/2/4481.html" },
+  FARM: { title: "福島市「農地を転用する時の手続き」(農業委員会)", url: B + "soshiki/18/2/348.html" },
+  EMAP: { title: "ふくしまeマップ(福島市地理情報システム)", url: B + "soshiki/2/1005/1/2891.html" },
+  HAZARD: { title: "重ねるハザードマップ(国土地理院)", url: "https://disaportal.gsi.go.jp/" },
+  OSM: { title: "OpenStreetMap contributors(Overpass API)", url: "https://www.openstreetmap.org/copyright" },
+  MLIT: { title: "国土交通省 不動産情報ライブラリ(都市計画情報)", url: "https://www.reinfolib.mlit.go.jp/" }
+};
+
+const KUBUN = ["市街化区域", "市街化調整区域", "都市計画区域外"];
+const YOUTO = ["第一種低層住居専用地域", "第二種低層住居専用地域", "第一種中高層住居専用地域", "第二種中高層住居専用地域", "第一種住居地域", "第二種住居地域", "準住居地域", "田園住居地域", "近隣商業地域", "商業地域", "準工業地域", "工業地域", "工業専用地域", "用途地域の指定なし"];
 
 const ROAD_JA = {
   motorway: "高速道路", trunk: "幹線道路", primary: "主要道路", secondary: "二次道路", tertiary: "三次道路",
@@ -244,156 +320,153 @@ const ROAD_JA = {
   path: "歩道・小道", footway: "歩道", living_street: "生活道路"
 };
 
-function findRule(rules, code) {
-  if (!code) return null;
-  if (rules[code]) return rules[code];
-  for (const k of Object.keys(rules)) if (k.endsWith("*") && code.startsWith(k.slice(0, -1))) return rules[k];
-  return null;
-}
+const normKubun = (s) => (/調整/.test(s) ? "市街化調整区域" : /市街化/.test(s) ? "市街化区域" : /区域外|外/.test(s) ? "都市計画区域外" : "");
 
-function mlitRow(label, st, build) {
-  if (st.state === "off") return { label, text: "未確認:中継サーバー(PROXY_URL)が未設定のため取得していません", status: "todo", source: MLIT, hint: "README の手順で国の API キーと中継サーバーを設定すると、ここに自動で入ります" };
-  if (st.state === "err") return { label, text: "未確認:取得に失敗しました(" + st.error + ")", status: "todo", source: MLIT, hint: "時間をおいて再実行、または市の都市計画課・公開GISで確認" };
-  if (!st.rows.length) return { label, text: "未確認:この地点に該当する区域が返りませんでした(都市計画区域外の可能性)", status: "todo", source: MLIT, hint: "都市計画区域外かどうかを市に確認" };
-  return { label, text: build(st.rows[0]), status: "ok", source: MLIT, hint: "データの更新時期により現況と異なる場合があります" };
-}
+function isTarget(muni) { return !!(muni && muni.code === "07201"); }
+const CITY = "福島市";
 
+/** inputs: {area:数値|null, kubun:文字, zoning:文字, radius:数値} */
 function evaluate(ctx) {
-  const { muni, nearby, landuse, mlit, rules } = ctx;
-  const rule = muni ? findRule(rules, muni.code) : null;
+  const { nearby, landuse, mlit, inputs } = ctx;
   const pend = (k) => nearby.pending && nearby.pending[k];
   const why = (k) => nearby.errors[k] || nearby.errors.all || "原因不明";
-  const sections = [];
+  const R = inputs.radius;
+  const area = inputs.area;
 
-  // ---------- 1. 土地の規制 ----------
-  const kubunText = mlit.kubun.state === "ok" && mlit.kubun.rows[0] ? (mlit.kubun.rows[0].area_classification_ja || "") : "";
-  const isUrban = /市街化区域/.test(kubunText) && !/調整/.test(kubunText);
-  const isAdjust = /市街化調整/.test(kubunText);
+  // ---- 区域区分・用途地域(国のデータ > 手入力 > 未確認)----
+  let kubun = "", kubunRow, youtoRow;
+  if (mlit.kubun.state === "ok" && mlit.kubun.rows[0]) {
+    kubun = normKubun(mlit.kubun.rows[0].area_classification_ja || "");
+    kubunRow = { label: "区域区分", text: mlit.kubun.rows[0].area_classification_ja || "区分名の取得なし", status: "ok", source: SRC.MLIT, hint: "国のデータによる(更新時期により現況と異なる場合あり)" };
+  } else if (inputs.kubun) {
+    kubun = inputs.kubun;
+    kubunRow = { label: "区域区分", text: inputs.kubun + "(入力値)", status: "est", source: SRC.EMAP, hint: "ふくしまeマップ等で確認した値の入力。下の「確認した」で確認先つきの確認済みにできます" };
+  } else {
+    kubunRow = { label: "区域区分", text: "未確認:市街化区域/市街化調整区域のどちらかを調べて、上の欄で選んでください", status: "todo", source: SRC.EMAP, hint: "都市計画課 024-525-3761。選ぶと開発許可・農地転用の見込みが出ます" };
+  }
+  if (mlit.zoning.state === "ok" && mlit.zoning.rows[0]) {
+    const p = mlit.zoning.rows[0];
+    youtoRow = { label: "用途地域", text: [p.use_area_ja || "名称なし", p.u_building_coverage_ratio_ja && "建ぺい率 " + p.u_building_coverage_ratio_ja, p.u_floor_area_ratio_ja && "容積率 " + p.u_floor_area_ratio_ja].filter(Boolean).join(" / "), status: "ok", source: SRC.MLIT, hint: "蓄電設備が建てられるかは、建築基準法の規定と開発建築指導課への確認が必要" };
+  } else if (inputs.zoning) {
+    youtoRow = { label: "用途地域", text: inputs.zoning + "(入力値)", status: "est", source: SRC.EMAP, hint: "建築の可否は建築基準法の規定と開発建築指導課への確認が必要" };
+  } else {
+    youtoRow = { label: "用途地域", text: "未確認:ふくしまeマップ、または都市計画課(024-525-3761)で確認して、上の欄で選んでください", status: "todo", source: SRC.EMAP, hint: "" };
+  }
 
-  const land = [];
-  land.push(mlitRow("区域区分(市街化区域など)", mlit.kubun, (p) => p.area_classification_ja || "区分名の取得なし"));
-  land.push(mlitRow("用途地域", mlit.zoning, (p) => {
-    const t = [p.use_area_ja || "名称なし"];
-    if (p.u_building_coverage_ratio_ja) t.push("建ぺい率 " + p.u_building_coverage_ratio_ja);
-    if (p.u_floor_area_ratio_ja) t.push("容積率 " + p.u_floor_area_ratio_ja);
-    return t.join(" / ");
-  }));
-
+  // ---- 開発許可 ----
+  let devEst;
+  if (!kubun) devEst = { text: "区域区分を選ぶと見込みを出します", status: "todo" };
+  else if (kubun === "市街化区域") {
+    if (area == null) devEst = { text: "敷地面積を入力すると見込みを出します(市街化区域は1,000㎡以上が対象)", status: "todo" };
+    else if (area >= 1000) devEst = { text: "敷地 " + area.toLocaleString() + "㎡ は1,000㎡以上 → 開発許可が必要になる見込み(開発行為に当たる場合)", status: "est" };
+    else devEst = { text: "敷地 " + area.toLocaleString() + "㎡ は1,000㎡未満 → 面積の上では開発許可は不要の見込み", status: "est" };
+  } else if (kubun === "市街化調整区域") {
+    devEst = { text: "市街化調整区域は面積にかかわらず開発許可の対象 → 許可が必要になる見込み(開発行為に当たる場合)" + (area != null && area >= 3000 ? "。3,000㎡以上なので、開発行為等指導要綱により事前に適用の要否を市に協議する対象" : ""), status: "est" };
+  } else {
+    devEst = { text: "都市計画区域外は10,000㎡以上が対象" + (area != null ? "。敷地 " + area.toLocaleString() + "㎡ → " + (area >= 10000 ? "対象になる見込み" : "面積の上では対象外の見込み") : "。敷地面積を入力すると見込みを出します") + (area != null && area >= 3000 ? "(3,000㎡以上は開発行為等指導要綱による事前協議の対象)" : ""), status: area != null ? "est" : "todo" };
+  }
+  const land = [kubunRow, youtoRow,
+    { label: "開発許可の基準(福島市)", text: "市街化区域=1,000㎡以上 / 市街化調整区域=面積にかかわらずすべて / 都市計画区域外=10,000㎡以上の開発行為。さらに福島市の開発行為等指導要綱で、市街化調整区域と都市計画区域外の3,000㎡以上は、事前に適用の要否を市に協議。", status: "ok", source: SRC.DEV, hint: "開発建築指導課 開発審査係 024-525-3790" },
+    { label: "開発許可の見込み(この敷地)", text: devEst.text + "。開発行為は「建築物の建築または特定工作物の建設の目的で行う土地の区画形質の変更」。蓄電設備が建築物・特定工作物に当たるかは、福島市の窓口表で開発建築指導課に確認する項目とされています。", status: devEst.status, source: SRC.DEV, hint: "蓄電設備の扱いは開発建築指導課に事前確認" },
+    { label: "設置を回避すべき区域(ガイドライン3-1)", text: "砂防指定地、地すべり防止区域、急傾斜地崩壊危険区域、土砂災害(特別)警戒区域、家屋倒壊等氾濫想定区域、河川区域、地域森林計画対象民有林・保安林、自然公園、鳥獣保護区、重要文化財等・史跡名勝天然記念物の区域、水源保護地域、風致地区、市が定める土砂災害のおそれのある区域。この地点が該当するかは未確認(地図の「ハザードの重ね表示」で目視、各窓口で確認)。", status: "todo", source: SRC.GUIDE, hint: "地図のチェックで色が付けば該当の可能性。重ねるハザードマップでも確認" },
+    { label: "慎重な検討を要する区域(ガイドライン3-2)", text: "景観計画区域(景観配慮への適合)、洪水浸水想定区域(浸水対策・感電防止)、埋蔵文化財包蔵地。この地点が該当するかは未確認。", status: "todo", source: SRC.GUIDE, hint: "景観: 都市計画課 / 文化財: 文化振興課" },
+    { label: "盛土規制法・風致地区条例", text: "規制区域内で宅地造成等を行う場合は許可(盛土規制法)。風致地区内の一定の行為は許可申請(風致地区条例)。いずれも窓口は開発建築指導課。この地点が該当するかは未確認。", status: "todo", source: SRC.WINDOW, hint: "開発建築指導課 024-525-3790" },
+    { label: "農地転用の基準(福島市)", text: "市街化区域内=事前の「届出」(受付締切は毎月10日・20日・月末、受理書は締切から4開庁日後。転用1,000㎡以上は他法令の許可が先に必要なことあり)。市街化区域以外=農業委員会の「許可申請」(毎月22〜28日が締切、許可書は翌月28日交付。4ha超は県知事)。", status: "ok", source: SRC.FARM, hint: "農業委員会事務局 農地係 024-525-3779" }
+  ];
   const farm = landuse ? landuse.filter((x) => CONFIG.FARMLAND.includes(x)) : null;
-  let farmText = "農地転用の要否は、登記・現況・農業委員会の判断で決まります。";
-  if (farm === null) farmText = (pend("landuse") ? "取得中…" : "未確認:土地利用の取得に失敗しました(" + why("landuse") + ")。") + farmText;
-  else if (farm.length) farmText = "農地の可能性あり(地図上の土地利用: " + [...new Set(farm)].join("、") + ")。" + farmText;
-  else farmText = "地図上では農地の記載なし(未登録の場合あり)。" + farmText;
-  if (isUrban) farmText += " 市街化区域のため、農地であれば転用は届出で足りる可能性(農業委員会に要確認)。";
-  else if (isAdjust) farmText += " 市街化調整区域のため、農地であれば転用許可・開発許可とも厳しい判断になる可能性(要確認)。";
-  else farmText += " 農地であれば農地法第4条・第5条の許可(市街化区域は届出)が論点になります。";
-  land.push({ label: "農地転用の見込み", text: farmText, status: "todo", source: EGOV, hint: "登記簿の地目と農業委員会への確認が必要。OSMは農地の網羅的な台帳ではありません" });
+  let farmText, farmStatus = "todo";
+  if (farm === null) farmText = pend("landuse") ? "取得中…" : "未確認:土地利用の取得に失敗しました(" + why("landuse") + ")。登記簿の地目で確認してください。";
+  else if (farm.length) { farmText = "地図上は農地の可能性あり(" + [...new Set(farm)].join("、") + ")。"; farmStatus = "est"; }
+  else farmText = "地図上は農地の記載なし(ただし未登録のこともあります)。";
+  if (farm !== null) {
+    if (kubun === "市街化区域") farmText += "農地なら届出で足りる見込み。";
+    else if (kubun) farmText += "農地なら許可申請が必要な見込み(市街化区域以外)。";
+    else farmText += "区域区分を選ぶと、届出か許可かが分かります。";
+    farmText += "実際の地目・現況は登記簿と農業委員会で確認が必要。";
+  }
+  land.push({ label: "農地転用の見込み(この地点)", text: farmText, status: farmStatus, source: SRC.OSM, hint: "OSMは農地の台帳ではありません。登記簿の地目の確認が必須" });
 
-  let devText = "開発許可(都市計画法第29条)の要否と見込みは、敷地の規模・区域区分・計画内容で決まります。";
-  if (isUrban) devText += " 市街化区域では一定規模以上(原則1,000㎡以上と言われる)で必要になる可能性。";
-  else if (isAdjust) devText += " 市街化調整区域は原則抑制のため、許可の見込みは個別に厳しく審査される可能性。";
-  else devText += " 非線引き区域等では3,000㎡以上が目安とされる場合あり。";
-  devText += " 規模・扱いは自治体の運用で異なるため要確認。";
-  land.push({ label: "開発許可の見込み", text: devText, status: "todo", source: EGOV, hint: "都道府県・市の開発許可担当に事前相談(蓄電所が開発行為に当たるかも要確認)" });
-  sections.push({ id: "land", title: "土地の規制", rows: land });
-
-  // ---------- 2. 周辺住宅との距離と市の基準 ----------
+  // ---- 周辺住宅との距離と市の基準 ----
   const dist = [];
-  if (!nearby.buildings) {
-    dist.push({ label: "最寄りの住宅系建物", text: pend("buildings") ? "取得中…" : "未確認:周辺建物の取得に失敗しました(" + why("buildings") + ")", status: "todo", source: OSM, hint: "時間をおいて同じ地点をもう一度押す。または現地・航空写真で確認" });
-  } else {
-    const res = nearby.buildings.filter((b) => b.res);
-    const any = nearby.buildings;
-    const lim = rule && rule.distance_m;
-    const rad = lim || CONFIG.REF_RADIUS_M;
-    const within = res.filter((b) => b.d <= rad).length;
-    if (res.length) {
-      const nearest = res[0].d;
-      let t = "約" + round5(nearest) + "m(半径" + rad + "m以内に " + within + "棟)";
-      let st = "ok";
-      if (lim && nearest < lim) { t += " → 市の基準 " + lim + "m より近い"; st = "warn"; }
-      dist.push({ label: "最寄りの住宅系建物", text: t, status: st, source: OSM, hint: "概算。OSMに未登録の家があると実際より遠く出ます。種別が不明な建物(yes)は住宅に数えていません" });
-    } else {
-      dist.push({ label: "最寄りの住宅系建物", text: "800m以内に住宅系の建物は見つかりませんでした(建物全体 " + any.length + "棟)", status: "ok", source: OSM, hint: "OSMの登録漏れの可能性があります。航空写真で必ず確認" });
-    }
-    if (any.length && (!res.length || any[0].d < (res[0] || any[0]).d)) {
-      dist.push({ label: "最寄りの建物(種別不問)", text: "約" + round5(any[0].d) + "m(種別: " + any[0].type + ")", status: "ok", source: OSM, hint: "住宅か事業用かは地図上では判別できない場合があります" });
-    }
+  if (!nearby.buildings) dist.push({ label: "最寄りの住宅系建物", text: pend("buildings") ? "取得中…" : "未確認:周辺建物の取得に失敗しました(" + why("buildings") + ")", status: "todo", source: SRC.OSM, hint: "もう一度地点を押す、または航空写真で確認" });
+  else {
+    const res = nearby.buildings.filter((b) => b.res), any = nearby.buildings;
+    const within = res.filter((b) => b.d <= R).length;
+    if (res.length) dist.push({ label: "最寄りの住宅系建物", text: "約" + round5(res[0].d) + "m(半径" + R + "m以内に " + within + "棟)", status: "ok", source: SRC.OSM, hint: "概算。OSMに未登録の家があると実際より遠く出ます。種別不明の建物は住宅に数えていません" });
+    else dist.push({ label: "最寄りの住宅系建物", text: "600m以内に住宅系の建物は見つかりませんでした(建物全体 " + any.length + "棟)", status: "ok", source: SRC.OSM, hint: "登録漏れの可能性があります。航空写真で必ず確認" });
+    if (any.length && (!res.length || any[0].d < res[0].d)) dist.push({ label: "最寄りの建物(種別不問)", text: "約" + round5(any[0].d) + "m(種別: " + any[0].type + ")", status: "ok", source: SRC.OSM, hint: "住宅か事業用かは地図上では判別できないことがあります" });
   }
-  if (rule && rule.distance_m) {
-    const d = rule.documents && rule.documents[0];
-    const sourced = !!(d && d.url);
-    dist.push({ label: "市の距離の基準(" + rule.name + ")", text: rule.distance_text, status: sourced ? "ok" : "todo", source: d ? { title: d.title, url: d.url } : null, hint: sourced ? "" : "出典URL未登録。市の公開原文で数値と対象設備を確認" });
-  } else {
-    dist.push({ label: "市の距離の基準", text: "未確認:この市の基準は未登録です", status: "todo", source: null, hint: muni ? "下の『条例・ガイドライン』のリンクから市の公開ページで確認し、data/municipalities.json に追記" : "" });
-  }
-  sections.push({ id: "dist", title: "周辺住宅との距離と市の基準", rows: dist });
+  dist.push({ label: "市の基準:近隣区域(ガイドライン2-1(6))", text: "事業区域の境界から「おおむね300m以内」を近隣区域とし、その範囲に居住・土地建物を所有する人、町会の代表者などを「近隣住民等」として説明・協議の対象にする。市長が必要と認めた場合は、規模に応じて別の距離を定める。住宅からの離隔距離を個別に定めた規定はない。", status: "ok", source: SRC.GUIDE, hint: "距離は敷地の境界から測ります。地図の円は選んだ点を中心にした目安です" });
 
-  // ---------- 3. 条例・ガイドライン・手続き・様式 ----------
-  const ord = [];
-  if (rule) {
-    for (const d of rule.documents || []) {
-      ord.push({ label: "条例・ガイドライン", text: d.title + (d.note ? "(" + d.note + ")" : ""), status: d.url ? "ok" : "todo", source: d.url ? { title: d.title, url: d.url } : null, hint: d.url ? "" : "出典URL未登録。市の公開原文で最新版・対象設備を確認" });
-    }
-    ord.push({ label: "必要な手続き・様式", text: rule.forms || "未確認:様式の情報は未登録です", status: "todo", source: null, hint: "届出・協議の時期(着工何日前か等)は原文で確認" });
-    for (const n of rule.notes || []) ord.push({ label: "留意点", text: n, status: "todo", source: null, hint: "" });
-  } else {
-    const q = encodeURIComponent((muni && muni.name ? muni.name : "") + " 発電設備 蓄電所 条例 ガイドライン");
-    ord.push({ label: "条例・ガイドライン", text: "未確認:" + (muni && muni.name ? muni.name : "この市") + "の基準は未登録です", status: "todo", source: { title: "市の公開ページを検索(参考リンク)", url: "https://www.google.com/search?q=" + q }, hint: "原文を確認したら data/municipalities.json に追記すると、次回から表示されます" });
-    ord.push({ label: "必要な手続き・様式", text: "未確認:市の原文で確認してください", status: "todo", source: null, hint: "" });
-  }
-  sections.push({ id: "ord", title: "市の条例・ガイドラインと、必要な手続き・様式", rows: ord });
+  // ---- 条例・ガイドライン・手続き・様式 ----
+  const ord = [
+    { label: "条例・ガイドライン", text: "「福島市系統用蓄電池設備ガイドライン」(令和8年5月13日制定)。構外から伝送された電力を構内の電力貯蔵装置に貯蔵し、同じ電圧・周波数で構外へ送る設備が対象(同一構内で発電設備・需要設備と電気的に接続されたものは除く)。規模の下限はなし。罰則はないが、合意形成が不十分な場合は中止を要請することがあり、事業概要の公表を求める。", status: "ok", source: SRC.GUIDE, hint: "担当:企業振興課 工業基盤整備係 024-525-3723。設置を検討する段階で事前相談" },
+    { label: "施行日・適用開始日", text: "未確認:ガイドライン本文・概要に施行日や経過措置の記載がありません(令和8年5月13日は制定日)。", status: "todo", source: SRC.GAIYOU, hint: "企業振興課に確認" },
+    { label: "手続きの流れ(着手前)", text: "事前相談 → 第1号「特定蓄電事業設置計画兼事前協議書」 → 近隣住民等への説明会(事前協議書の提出後、添付書類が揃ったら速やかに。意見書は説明会の翌日から概ね30日以内) → 第3号「近隣住民等範囲説明書」 → 第6号「地域との協議経過等報告書」(工事着手の1か月前まで)。", status: "ok", source: SRC.GAIYOU, hint: "第4号 維持管理計画書・第5号 撤去計画書も様式あり" },
+    { label: "手続きの流れ(着手〜廃止)", text: "第7号 設置工事着手届(工事着手日の1か月前まで) → 第8号 設置完了届(完了翌日から14日以内) → 第9号 運用開始報告書(運用開始前まで) → 第10号 運用終了届(終了翌日から14日以内) → 第11号 撤去完了兼廃止届(撤去・処分完了の翌日から14日以内)。事業者が変わる場合は第2号の変更届等。", status: "ok", source: SRC.GAIYOU, hint: "各様式はWord形式で市ページに掲載" },
+    { label: "様式一覧(第1〜11号)", text: "1 設置計画兼事前協議書 / 2 設置計画変更等届出書 / 3 近隣住民等範囲説明書 / 4 維持管理計画書 / 5 撤去計画書 / 6 地域との協議経過等報告書 / 7 設置工事着手届 / 8 設置完了届 / 9 運用開始報告書 / 10 運用終了届 / 11 撤去完了兼廃止届。", status: "ok", source: SRC.PAGE, hint: "" },
+    { label: "関係法令の窓口(福島市の一覧)", text: "開発許可・建築物の該当確認・盛土規制・風致地区=開発建築指導課 / 景観=都市計画課 / 農地転用=農業委員会事務局・県農業担い手課 / 農振除外=農業企画課 / 森林法=県森林保全課・県北農林事務所 / 河川・砂防・土砂災害=県北建設事務所 / 道路=国交省福島河川国道事務所・県北建設事務所 / 騒音等=環境衛生課 / 消防=消防本部予防課 / 電気事業法=経産省東北支部。", status: "ok", source: SRC.WINDOW, hint: "全33項目の一覧は出典PDF" }
+  ];
 
-  // ---------- 4. 注意点 ----------
+  // ---- 注意点 ----
   const care = [];
-  const fail = (k) => pend(k) ? "取得中…" : "未確認:取得に失敗しました(" + why(k) + ")";
+  care.push({ label: "住民(ガイドライン)", text: "説明会は形式的に終わらせず、双方向の意見交換で実質的な合意形成を求める。開催は郵送・インターネット等で確実に周知し、参加できなかった人には連絡先つき資料を配布。説明事項は、土地利用、土砂災害防止、自然・生活環境・景観の保全、維持管理・撤去、非常時の対応など。", status: "ok", source: SRC.GUIDE, hint: "説明の実施は事業者が行います" });
   if (nearby.buildings) {
-    const n300 = nearby.buildings.filter((b) => b.res && b.d <= 300).length;
-    care.push({ label: "住民", text: "300m以内の住宅系建物 約" + n300 + "棟。説明会・周知の要否と範囲は市の基準と事業者判断(上の基準を確認)", status: "todo", source: OSM, hint: "棟数は概算。住民への説明そのものは事業者が行います" });
-  } else care.push({ label: "住民", text: fail("buildings"), status: "todo", source: OSM, hint: "" });
+    const n = nearby.buildings.filter((b) => b.res && b.d <= R).length;
+    care.push({ label: "近隣の住宅数(概算)", text: "半径" + R + "m以内の住宅系建物 約" + n + "棟(地図の円の内側)", status: "ok", source: SRC.OSM, hint: "概算。近隣住民等の実際の範囲は敷地境界から300mで、町会の代表者等も含みます" });
+  } else care.push({ label: "近隣の住宅数(概算)", text: pend("buildings") ? "取得中…" : "未確認:周辺データの取得に失敗しました(" + why("buildings") + ")", status: "todo", source: SRC.OSM, hint: "" });
+  care.push({ label: "道路・搬入(ガイドライン5-2(2))", text: "工事車両の通行時の安全確保。道路や周辺施設を損傷・汚損した場合は速やかに修繕・清掃。工事中の土砂流出・粉じん対策。道路への工作物の設置等は道路法の許可(窓口は道路管理者)。", status: "ok", source: SRC.GUIDE, hint: "" });
   if (nearby.roads) {
     const r = nearby.roads[0];
-    if (r) {
-      const w = r.width ? "、幅員タグ " + r.width + "m" : "";
-      care.push({ label: "道路・搬入", text: "約" + round5(r.d) + "m以内に " + (ROAD_JA[r.cls] || r.cls) + (r.name ? "(" + r.name + ")" : "") + w, status: "todo", source: OSM, hint: "地図上の道路の有無のみ。大型車の通行可否・幅員・接道条件は現地と道路管理者で確認" });
-    } else care.push({ label: "道路・搬入", text: "60m以内に道路が見つかりません(接道なしの可能性)", status: "todo", source: OSM, hint: "接道の有無は現地・公図で必ず確認" });
-  } else care.push({ label: "道路・搬入", text: fail("roads"), status: "todo", source: OSM, hint: "" });
+    care.push({ label: "接道・搬入路(この地点)", text: r ? "約" + round5(r.d) + "m以内に " + (ROAD_JA[r.cls] || r.cls) + (r.name ? "(" + r.name + ")" : "") + (r.width ? "、幅員タグ " + r.width + "m" : "") : "60m以内に道路が見つかりません(接道なしの可能性)", status: "todo", source: SRC.OSM, hint: "地図上の道路の有無のみ。大型車の通行可否・幅員・接道条件は現地と道路管理者で確認" });
+  } else care.push({ label: "接道・搬入路(この地点)", text: pend("roads") ? "取得中…" : "未確認:取得に失敗しました(" + why("roads") + ")", status: "todo", source: SRC.OSM, hint: "" });
+  care.push({ label: "消防(法令・条例)", text: "消防法:指定数量以上の危険物(電解液など)を有する蓄電池設備の設置は消防本部予防課の手続き。福島市火災予防条例:すべての蓄電池設備が届出の対象(福島市の窓口表による)。ガイドラインも消防法等に基づく火災防止措置と定期的な除草を求める。", status: "ok", source: SRC.WINDOW, hint: "消防本部 予防課。条文の詳細は火災予防条例で確認" });
   if (nearby.fire) {
     const f = nearby.fire[0];
-    care.push({ label: "消防", text: f ? "最寄りの消防署 約" + (f.d / 1000).toFixed(1) + "km" + (f.name ? "(" + f.name + ")" : "") : "10km以内に消防署が見つかりません(未登録の可能性)", status: "todo", source: OSM, hint: "蓄電設備の消防協議・届出の要否は管轄の消防本部に確認" });
-  } else care.push({ label: "消防", text: fail("fire"), status: "todo", source: OSM, hint: "" });
-  sections.push({ id: "care", title: "注意点(住民・道路搬入・消防)", rows: care });
+    care.push({ label: "消防署までの距離", text: f ? "最寄りの消防署 約" + (f.d / 1000).toFixed(1) + "km" + (f.name ? "(" + f.name + ")" : "") : "10km以内に消防署が見つかりません(未登録の可能性)", status: "ok", source: SRC.OSM, hint: "管轄は住所で決まります。予防課に確認" });
+  } else care.push({ label: "消防署までの距離", text: pend("fire") ? "取得中…" : "未確認:取得に失敗しました(" + why("fire") + ")", status: "todo", source: SRC.OSM, hint: "" });
+  care.push({ label: "景観・騒音・災害時(ガイドライン)", text: "景観計画区域内は景観法・景観条例の事前届出(都市計画課)。景観への配慮(目立たない色彩・植栽・目隠し)、騒音特定施設の該当確認と防音、柵塀・施錠・立入禁止表示。災害時は放充電を行い現地を確認して企業振興課へ報告。", status: "ok", source: SRC.GUIDE, hint: "" });
 
-  let ok = 0, todo = 0, warn = 0;
-  for (const s of sections) for (const r of s.rows) { if (r.status === "ok") ok++; else if (r.status === "warn") { ok++; warn++; } else todo++; }
-  return { sections, ok, todo, warn, radius: (rule && rule.distance_m) || CONFIG.REF_RADIUS_M };
+  const sections = [
+    { id: "land", title: "土地の規制", rows: land },
+    { id: "dist", title: "周辺住宅との距離と市の基準", rows: dist },
+    { id: "ord", title: "市の条例・ガイドラインと、必要な手続き・様式", rows: ord },
+    { id: "care", title: "注意点(住民・道路搬入・消防)", rows: care }
+  ];
+  return { sections, kubun };
 }
 
-const RULES_DATA = {"_README": "市ごとの基準。キーは市区町村コード(5桁)。url が null の項目は『出典URL未登録』として表示され、確認済みにはなりません。公的な原文URLを入れると『確認済み』になります。ここに書く内容は公開されている条例・ガイドラインだけにしてください。", "07201": {"name": "福島市", "distance_m": 300, "distance_text": "住宅から300m(ガイドラインの距離の目安)", "documents": [{"title": "福島市のガイドライン(2026年5月13日付)", "note": "対象となる設備の範囲(蓄電所・低圧を含むか)は市への確認が必要", "url": null}], "forms": "様式1〜11。事業者が変わる場合は様式2の変更届", "notes": ["適用範囲の確認が最優先(蓄電所が対象か)"]}, "04202": {"name": "石巻市", "distance_m": null, "distance_text": null, "documents": [{"title": "石巻市の条例・ガイドライン(2026年4月施行予定と把握)", "note": "施行状況と対象設備は市に要確認", "url": null}], "forms": null, "notes": []}, "2213*": {"name": "浜松市(区コード共通で判定)", "distance_m": null, "distance_text": null, "documents": [{"title": "浜松市の要綱(2025年12月)", "note": "対象設備と内容は市に要確認", "url": null}], "forms": null, "notes": []}};
 
 
 
 const PRESETS = [
-  { id: "kita", label: "北広島市(蓄電所の例)", lat: 42.9847, lng: 141.5627, z: 15 },
-  { id: "fuku", label: "福島市", lat: 37.7608, lng: 140.4747, z: 15 },
-  { id: "japan", label: "日本全体", lat: 37.5, lng: 137.5, z: 5, noRun: true }
+  { id: "shiyakusho", label: "福島市役所周辺", lat: 37.7608, lng: 140.4747, z: 15 },
+  { id: "eki", label: "福島駅周辺", lat: 37.7544, lng: 140.4590, z: 15 },
+  { id: "all", label: "福島市全体", lat: 37.72, lng: 140.45, z: 11, noRun: true }
 ];
-const STATUS_LABEL = { ok: "確認済み", warn: "確認済み・注意", todo: "未確認" };
+const STATUS = { ok: "確認済み", warn: "確認済み・注意", user: "確認済み(自社確認)", est: "見込み", todo: "未確認" };
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-let map, marker, circle, layer, rules = {}, seq = 0;
+let map, marker, layer, seq = 0;
+let last = null;            // 直近の地点の取得結果
+let conf = {};              // 自社確認(確認先・メモ・日付)。ブラウザに保存
+const CONF_KEY = "yk_site_conf_v1";
+try { conf = JSON.parse(localStorage.getItem(CONF_KEY) || "{}") || {}; } catch (e) { conf = {}; }
+const saveConf = () => { try { localStorage.setItem(CONF_KEY, JSON.stringify(conf)); } catch (e) { /* 保存できなくても動く */ } };
 
-async function init() {
-  rules = RULES_DATA;
-  map = L.map("map").setView([37.5, 137.5], 5);
+function init() {
+  map = L.map("map").setView([37.72, 140.45], 11);
   L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png", {
-    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>',
-    maxZoom: 18
+    attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">国土地理院</a>', maxZoom: 18
   }).addTo(map);
   layer = L.layerGroup().addTo(map);
-  marker = L.marker([37.5, 137.5], { draggable: true });
+  const HZ = "https://disaportaldata.gsi.go.jp/raster/";
+  const mk = (p) => L.tileLayer(HZ + p + "/{z}/{x}/{y}.png", { opacity: 0.6, maxNativeZoom: 17, maxZoom: 18, attribution: "ハザードマップポータル(国土地理院)" });
+  const overlays = { flood: L.layerGroup([mk("01_flood_l2_shinsuishin_data")]), dosha: L.layerGroup([mk("05_dosekiryukeikaikuiki"), mk("05_kyukeishakeikaikuiki"), mk("05_jisuberikeikaikuiki")]) };
+  for (const k of Object.keys(overlays)) $("ov_" + k).addEventListener("change", (e) => { if (e.target.checked) overlays[k].addTo(map); else overlays[k].remove(); });
+  marker = L.marker([37.7608, 140.4747], { draggable: true });
   marker.on("dragend", () => { const p = marker.getLatLng(); run(p.lat, p.lng, false); });
   map.on("click", (e) => run(e.latlng.lat, e.latlng.lng, false));
 
@@ -404,73 +477,170 @@ async function init() {
     if (p.noRun) { map.setView([p.lat, p.lng], p.z); return; }
     run(p.lat, p.lng, true, p.z);
   });
+  $("kubun").innerHTML = '<option value="">未選択</option>' + KUBUN.map((k) => `<option>${esc(k)}</option>`).join("");
+  $("zoning").innerHTML = '<option value="">未選択</option>' + YOUTO.map((k) => `<option>${esc(k)}</option>`).join("");
+  for (const id of ["kubun", "zoning", "radius"]) $(id).addEventListener("change", refresh);
+  $("area").addEventListener("input", refresh);
+  $("reportBtn").addEventListener("click", openReport);
+  $("closeReport").addEventListener("click", () => { $("report").hidden = true; document.body.classList.remove("printing"); });
+  $("printBtn").addEventListener("click", () => window.print());
+  $("result").addEventListener("click", onResultClick);
   $("proxyNote").hidden = !!CONFIG.PROXY_URL;
-  $("result").innerHTML = '<p class="hint">地図をクリックするか、ピンを動かすと、その地点を判定します。</p>';
+  $("result").innerHTML = '<p class="hint">福島市内の地点を、地図のクリックかピンのドラッグで選んでください。上の「福島市役所周辺」「福島駅周辺」ボタンでも試せます。</p>';
 }
+
+const inputs = () => {
+  const a = parseFloat(($("area").value || "").replace(/,/g, ""));
+  return { area: Number.isFinite(a) && a > 0 ? a : null, kubun: $("kubun").value, zoning: $("zoning").value, radius: parseInt($("radius").value, 10) || 300 };
+};
+const siteKey = () => (last ? last.lat.toFixed(4) + "," + last.lng.toFixed(4) : "");
 
 async function run(lat, lng, fly, z) {
   const my = ++seq;
   marker.setLatLng([lat, lng]).addTo(map);
   if (fly) map.setView([lat, lng], z || 15);
   $("result").innerHTML = '<p class="hint">取得中…(混んでいるときは数分かかります。取れた項目から順に表示します)</p>';
+  $("reportBtn").disabled = true;
 
   const settle = async (p) => { try { return { v: await p }; } catch (e) { return { e: e.message || String(e) }; } };
-  const mlitState = async (layerName) => {
+  const mlitState = async (name) => {
     if (!CONFIG.PROXY_URL) return { state: "off" };
-    const r = await settle(fetchMlit(layerName, lat, lng));
+    const r = await settle(fetchMlit(name, lat, lng));
     return r.e ? { state: "err", error: r.e } : { state: "ok", rows: r.v || [] };
   };
-  // Overpass への同時アクセスを避けるため、OSM系は順番に取得。国の API・住所は並行。
-  const geoP = settle(reverseGeocode(lat, lng));
-  const kP = mlitState("XKT001"), zP = mlitState("XKT002");
-  const [geo, kubun, zoning] = await Promise.all([geoP, kP, zP]);
+  const [geo, kubun, zoning] = await Promise.all([settle(reverseGeocode(lat, lng)), mlitState("XKT001"), mlitState("XKT002")]);
   if (my !== seq) return;
   const muni = geo.v || null;
-  const show = (nearby) => {
-    if (my !== seq) return;
-    const res = evaluate({ muni, nearby, landuse: nearby.landuse, mlit: { kubun, zoning }, rules });
-    draw(lat, lng, nearby, res.radius);
-    render(muni, geo.e, res);
-  };
+  last = { lat, lng, muni, geoErr: geo.e, mlit: { kubun, zoning }, nearby: null, my };
+  if (!isTarget(muni)) { last.nearby = null; refresh(); return; }
   const empty = { buildings: null, roads: null, fire: null, landuse: null, errors: {}, pending: { buildings: true, roads: true, fire: true, landuse: true } };
-  show(empty);
-  try { await fetchNearby(lat, lng, show); }
-  catch (e) { show({ ...empty, pending: {}, errors: { all: e.message } }); }
+  last.nearby = empty; refresh();
+  try { await fetchNearby(lat, lng, (n) => { if (my === seq) { last.nearby = n; refresh(); } }); }
+  catch (e) { if (my === seq) { last.nearby = { ...empty, pending: {}, errors: { all: e.message } }; refresh(); } }
 }
 
-function draw(lat, lng, nearby, radius) {
-  layer.clearLayers();
-  if (circle) { circle = null; }
-  L.circle([lat, lng], { radius, color: "#b45309", weight: 1.5, fillOpacity: 0.05 }).addTo(layer);
-  if (!nearby.buildings) return;
-  for (const b of nearby.buildings.slice(0, 300)) {
-    L.circleMarker([b.lat, b.lng], { radius: b.res ? 3.5 : 2, color: b.res ? "#b91c1c" : "#6b7280", weight: 1, fillOpacity: 0.8 }).addTo(layer);
+function compute() {
+  if (!last || !last.nearby) return null;
+  const inp = inputs();
+  const res = evaluate({ nearby: last.nearby, landuse: last.nearby.landuse, mlit: last.mlit, inputs: inp });
+  const key = siteKey();
+  let ok = 0, est = 0, todo = 0;
+  for (const s of res.sections) for (const r of s.rows) {
+    const c = conf[key + "|" + r.label];
+    r.key = key + "|" + r.label;
+    if (c && (r.status === "todo" || r.status === "est")) { r.conf = c; r.status = "user"; }
+    if (r.status === "ok" || r.status === "warn" || r.status === "user") ok++; else if (r.status === "est") est++; else todo++;
+  }
+  return { ...res, inp, ok, est, todo };
+}
+
+function refresh() {
+  if (!last) return;
+  const res = compute();
+  const radius = inputs().radius;
+  drawMap(layer, last.lat, last.lng, last.nearby, radius);
+  render(res);
+  $("reportBtn").disabled = !res || Object.values(last.nearby.pending || {}).some(Boolean);
+}
+
+function drawMap(lyr, lat, lng, nearby, radius) {
+  lyr.clearLayers();
+  L.circle([lat, lng], { radius, color: "#b45309", weight: 2, fillOpacity: 0.06 }).addTo(lyr);
+  if (!nearby || !nearby.buildings) return;
+  for (const b of nearby.buildings.slice(0, 400)) {
+    L.circleMarker([b.lat, b.lng], { radius: b.res ? 3.5 : 2, color: b.res ? "#b91c1c" : "#6b7280", weight: 1, fillOpacity: 0.8 }).addTo(lyr);
   }
   const n = nearby.buildings.find((b) => b.res);
-  if (n) L.polyline([[lat, lng], [n.lat, n.lng]], { color: "#b91c1c", weight: 2, dashArray: "4 4" }).addTo(layer);
+  if (n) L.polyline([[lat, lng], [n.lat, n.lng]], { color: "#b91c1c", weight: 2, dashArray: "4 4" }).addTo(lyr);
 }
 
-function srcHtml(s) {
-  if (!s) return '<span class="nosrc">出典なし</span>';
-  return s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title);
+const srcHtml = (s) => (!s ? '<span class="nosrc">出典なし</span>' : s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title));
+
+function rowHtml(r) {
+  const canConfirm = r.status === "todo" || r.status === "est";
+  const c = r.conf ? `<div class="conf">自社確認: ${esc(r.conf.who)}${r.conf.note ? " / " + esc(r.conf.note) : ""}(${esc(r.conf.date)}) <button type="button" class="link" data-undo="${esc(r.key)}">取り消す</button></div>` : "";
+  return `<div class="row ${r.status}">
+    <div class="lab"><span class="badge ${r.status}">${STATUS[r.status]}</span>${esc(r.label)}</div>
+    <div class="txt">${esc(r.text)}</div>${c}
+    <div class="src">出典: ${srcHtml(r.source)}${r.hint ? `<br><span class="h">${esc(r.hint)}</span>` : ""}</div>
+    ${canConfirm ? `<div class="act"><button type="button" class="small" data-confirm="${esc(r.key)}">確認した</button></div>` : ""}
+  </div>`;
 }
 
-function render(muni, geoErr, res) {
-  const head = muni
-    ? `<h2>${esc(muni.name || "市区町村コード " + muni.code)}<small>${esc(muni.detail || "")}</small></h2>`
-    : `<h2>所在地を特定できません<small>${esc(geoErr || "日本国外・海上の可能性")}</small></h2>`;
-  const counts = `<p class="counts"><span class="chip ok">確認済み ${res.ok}</span><span class="chip todo">未確認 ${res.todo}</span>${res.warn ? `<span class="chip warn">注意 ${res.warn}</span>` : ""}</p>`;
-  const body = res.sections.map((s) => `
-    <section><h3>${esc(s.title)}</h3>
-    ${s.rows.map((r) => `
-      <div class="row ${r.status}">
-        <div class="lab"><span class="badge ${r.status}">${STATUS_LABEL[r.status]}</span>${esc(r.label)}</div>
-        <div class="txt">${esc(r.text)}</div>
-        <div class="src">出典: ${srcHtml(r.source)}${r.hint ? `<br><span class="h">${esc(r.hint)}</span>` : ""}</div>
-      </div>`).join("")}
-    </section>`).join("");
-  $("result").innerHTML = head + counts + body +
-    '<p class="foot">これは一次スクリーニングです。許認可・法的判断・自治体の見解の代わりにはなりません。「未確認」は必ず原典・窓口で確認してください。</p>';
+function headHtml() {
+  const m = last.muni;
+  if (!m) return `<h2>所在地を特定できません<small>${esc(last.geoErr || "日本国外・海上の可能性")}</small></h2>`;
+  return `<h2>${esc(m.name || "市区町村コード " + m.code)}<small>${esc(m.detail || "")}　(${last.lat.toFixed(5)}, ${last.lng.toFixed(5)})</small></h2>`;
+}
+
+function render(res) {
+  if (!last.muni || !isTarget(last.muni)) {
+    $("result").innerHTML = headHtml() + '<p class="note">この版は<strong>福島市専用</strong>です。福島市内の地点を選んでください。</p>';
+    return;
+  }
+  if (!res) return;
+  const counts = `<p class="counts"><span class="chip ok">確認済み ${res.ok}</span><span class="chip est">見込み ${res.est}</span><span class="chip todo">未確認 ${res.todo}</span></p>`;
+  const body = res.sections.map((s) => `<section><h3>${esc(s.title)}</h3>${s.rows.map(rowHtml).join("")}</section>`).join("");
+  $("result").innerHTML = headHtml() + counts + body +
+    '<p class="foot">これは一次スクリーニングです。許認可・法的判断・福島市の見解の代わりにはなりません。「見込み」「未確認」は必ず窓口・原典で確認してください。</p>';
+}
+
+function onResultClick(e) {
+  const c = e.target.closest("[data-confirm]"), u = e.target.closest("[data-undo]"), s = e.target.closest("[data-save]"), x = e.target.closest("[data-cancel]");
+  if (u) { delete conf[u.dataset.undo]; saveConf(); refresh(); return; }
+  if (x) { refresh(); return; }
+  if (c) {
+    const act = c.closest(".act");
+    act.innerHTML = `<input class="who" placeholder="確認先(例: 農業委員会に電話 092-733-5777)"><input class="note" placeholder="メモ(任意)"><button type="button" class="small" data-save="${esc(c.dataset.confirm)}">保存</button> <button type="button" class="link" data-cancel="1">やめる</button>`;
+    return;
+  }
+  if (s) {
+    const act = s.closest(".act");
+    const who = act.querySelector(".who").value.trim();
+    if (!who) { act.querySelector(".who").focus(); return; }
+    const d = new Date();
+    conf[s.dataset.save] = { who, note: act.querySelector(".note").value.trim(), date: d.getFullYear() + "/" + (d.getMonth() + 1) + "/" + d.getDate() };
+    saveConf(); refresh();
+  }
+}
+
+// ---------- 診断書 ----------
+let rmap = null, rlayer = null;
+function openReport() {
+  const res = compute();
+  if (!res || !last) return;
+  $("report").hidden = false;
+  document.body.classList.add("printing");
+  const now = new Date();
+  const when = now.getFullYear() + "年" + (now.getMonth() + 1) + "月" + now.getDate() + "日 " + String(now.getHours()).padStart(2, "0") + ":" + String(now.getMinutes()).padStart(2, "0");
+  const inp = res.inp;
+  const m = last.muni;
+  const todos = res.sections.flatMap((s) => s.rows.filter((r) => r.status === "todo" || r.status === "est").map((r) => r.label));
+  $("reportBody").innerHTML = `
+    <h1>立地診断書(一次スクリーニング)</h1>
+    <p class="meta">作成日時: ${esc(when)}　/　対象: ${esc(m && m.name ? m.name : CITY)} ${esc(m && m.detail ? m.detail : "")}　/　座標: ${last.lat.toFixed(5)}, ${last.lng.toFixed(5)}</p>
+    <p class="meta">入力条件: 敷地面積 ${inp.area ? inp.area.toLocaleString() + "㎡" : "未入力"}　/　区域区分 ${esc(res.kubun || "未選択")}　/　用途地域 ${esc(inp.zoning || "未選択")}　/　地図の円の半径 ${inp.radius}m(参考の目安)</p>
+    <div class="sum"><span class="chip ok">確認済み ${res.ok}</span><span class="chip est">見込み ${res.est}</span><span class="chip todo">未確認 ${res.todo}</span></div>
+    <div id="rmap"></div>
+    <p class="meta">地図: 国土地理院 / 赤丸=住宅系建物、灰丸=その他の建物(OpenStreetMap)。円は参考の目安で、福島市の基準ではありません。</p>
+    ${res.sections.map((s) => `<h2>${esc(s.title)}</h2><table><thead><tr><th>項目</th><th>状態</th><th>内容</th><th>出典</th></tr></thead><tbody>${s.rows.map((r) => `
+      <tr class="${r.status}"><td>${esc(r.label)}</td><td><span class="badge ${r.status}">${STATUS[r.status]}</span></td>
+      <td>${esc(r.text)}${r.conf ? `<br><small>自社確認: ${esc(r.conf.who)}${r.conf.note ? " / " + esc(r.conf.note) : ""}(${esc(r.conf.date)})</small>` : ""}</td>
+      <td>${r.source ? `${esc(r.source.title)}<br><small>${esc(r.source.url || "")}</small>` : "出典なし"}</td></tr>`).join("")}</tbody></table>`).join("")}
+    <h2>これから確認すること(見込み・未確認)</h2>
+    <ul>${todos.length ? todos.map((t) => `<li>${esc(t)}</li>`).join("") : "<li>なし</li>"}</ul>
+    <p class="meta">この診断書は、地図データと福島市等の公開情報による一次スクリーニングです。許認可の可否・法的判断・福島市の見解を示すものではありません。「見込み」「未確認」の項目は、窓口・原典での確認が必要です。</p>`;
+
+  // 診断書内の地図(同じ地点・同じ円)
+  setTimeout(() => {
+    if (rmap) { rmap.remove(); rmap = null; }
+    rmap = L.map("rmap", { zoomControl: false, attributionControl: true }).setView([last.lat, last.lng], inp.radius >= 500 ? 15 : inp.radius >= 300 ? 16 : 17);
+    L.tileLayer("https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png", { attribution: "国土地理院", maxZoom: 18 }).addTo(rmap);
+    rlayer = L.layerGroup().addTo(rmap);
+    L.marker([last.lat, last.lng]).addTo(rlayer);
+    drawMap(rlayer, last.lat, last.lng, last.nearby, inp.radius);
+    if (rmap.invalidateSize) rmap.invalidateSize();
+  }, 50);
 }
 
 init();
