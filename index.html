@@ -157,43 +157,46 @@ async function reverseGeocode(lat, lng) {
 
 async function overpass(query) {
   const body = "data=" + encodeURIComponent(query);
-  const errs = [];
-  for (let round = 0; round < 2; round++) {
-    for (const url of CONFIG.OVERPASS) {
-      try {
-        const r = await withTimeout(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }, 40000);
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        const j = await r.json();
-        if (j.remark && /error|timed out/i.test(j.remark) && !(j.elements || []).length) throw new Error("サーバー混雑");
-        return j.elements || [];
-      } catch (e) { errs.push(new URL(url).hostname + ": " + (e.name === "AbortError" ? "タイムアウト" : e.message)); }
+  const one = async (url) => {
+    try {
+      const r = await withTimeout(url, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body }, 15000);
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      if (j.remark && /error|timed out/i.test(j.remark) && !(j.elements || []).length) throw new Error("サーバー混雑");
+      return j.elements || [];
+    } catch (e) {
+      throw new Error(new URL(url).hostname + ": " + (e.name === "AbortError" ? "15秒でタイムアウト" : e.message));
     }
-  }
-  throw new Error(errs.slice(-2).join(" / "));
+  };
+  // 全ての取得先に同時に問い合わせ、最初に成功した結果を使う(最悪でも約15秒)
+  try { return await Promise.any(CONFIG.OVERPASS.map(one)); }
+  catch (agg) { throw new Error((agg.errors || []).map((e) => e.message).slice(0, 2).join(" / ") || "取得先に接続できません"); }
 }
 
 /** OpenStreetMap(Overpass):周辺の建物・道路・消防署。3つを別々に取り、取れたものだけ使う。 */
 async function fetchNearby(lat, lng) {
   const out = { buildings: null, roads: null, fire: null, errors: {} };
   const pt = (e) => e.center || (e.lat != null ? { lat: e.lat, lon: e.lon } : null);
-  try {
+  const jobs = [];
+  jobs.push((async () => { try {
     const els = await overpass(`[out:json][timeout:30];way["building"](around:600,${lat},${lng});out center tags 400;`);
     out.buildings = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
       return { lat: c.lat, lng: c.lon, d: hav(lat, lng, c.lat, c.lon), type: t.building || "yes", res: CONFIG.RESIDENTIAL.includes(t.building) }; })
       .filter(Boolean).sort((a, b) => a.d - b.d);
-  } catch (e) { out.errors.buildings = e.message; }
-  try {
+  } catch (e) { out.errors.buildings = e.message; } })());
+  jobs.push((async () => { try {
     const els = await overpass(`[out:json][timeout:30];way["highway"](around:60,${lat},${lng});out center tags 60;`);
     out.roads = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
       return { cls: t.highway, name: t.name || "", width: t.width || "", d: hav(lat, lng, c.lat, c.lon) }; })
       .filter(Boolean).sort((a, b) => a.d - b.d);
-  } catch (e) { out.errors.roads = e.message; }
-  try {
+  } catch (e) { out.errors.roads = e.message; } })());
+  jobs.push((async () => { try {
     const els = await overpass(`[out:json][timeout:30];nwr["amenity"="fire_station"](around:10000,${lat},${lng});out center tags 20;`);
     out.fire = els.map((e) => { const c = pt(e); if (!c) return null; const t = e.tags || {};
       return { lat: c.lat, lng: c.lon, d: hav(lat, lng, c.lat, c.lon), name: t.name || "" }; })
       .filter(Boolean).sort((a, b) => a.d - b.d);
-  } catch (e) { out.errors.fire = e.message; }
+  } catch (e) { out.errors.fire = e.message; } })());
+  await Promise.all(jobs);
   return out;
 }
 
@@ -397,7 +400,7 @@ async function run(lat, lng, fly, z) {
   const my = ++seq;
   marker.setLatLng([lat, lng]).addTo(map);
   if (fly) map.setView([lat, lng], z || 15);
-  $("result").innerHTML = '<p class="hint">取得中…(地図データの混雑時は十数秒かかります)</p>';
+  $("result").innerHTML = '<p class="hint">取得中…(最大でも約20秒で終わります)</p>';
 
   const settle = async (p) => { try { return { v: await p }; } catch (e) { return { e: e.message || String(e) }; } };
   const mlitState = async (layerName) => {
@@ -408,8 +411,7 @@ async function run(lat, lng, fly, z) {
   // Overpass への同時アクセスを避けるため、OSM系は順番に取得。国の API・住所は並行。
   const geoP = settle(reverseGeocode(lat, lng));
   const kP = mlitState("XKT001"), zP = mlitState("XKT002");
-  const nb = await settle(fetchNearby(lat, lng));
-  const lu = await settle(fetchLanduse(lat, lng));
+  const [nb, lu] = await Promise.all([settle(fetchNearby(lat, lng)), settle(fetchLanduse(lat, lng))]);
   const [geo, kubun, zoning] = await Promise.all([geoP, kP, zP]);
   if (my !== seq) return; // 後から押された操作を優先
 
