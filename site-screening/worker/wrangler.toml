@@ -1,0 +1,7 @@
+name = "site-screening-proxy"
+main = "reinfolib-proxy.js"
+compatibility_date = "2024-09-01"
+
+[vars]
+# 画面を公開するURLのオリジン(末尾スラッシュなし)。カンマ区切りで複数可。
+ALLOWED_ORIGINS = "https://YOUR-NAME.github.io"
